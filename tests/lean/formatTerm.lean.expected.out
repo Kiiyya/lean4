@@ -32,23 +32,22 @@ do
     t.1
   else
     e.1
-def foo.1 := by 
+def foo.1 := by
   · skip; skip
   · skip; skip
     skip
     (skip; skip)
     ( skip; skip
       try skip; skip
-      try 
+      try
         skip
         skip
       skip)
 by
-  try 
+  try
     skip
     skip
-by
-   try 
+by try
       skip
       skip
 by try  skip
