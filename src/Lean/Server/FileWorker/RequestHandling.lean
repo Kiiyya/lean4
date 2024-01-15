@@ -397,33 +397,264 @@ where
             return toDocumentSymbols text stxs (syms.push sym) stack
         toDocumentSymbols text stxs syms stack
 
-def noHighlightKinds : Array SyntaxNodeKind := #[
-  -- usually have special highlighting by the client
-  ``Lean.Parser.Term.sorry,
-  ``Lean.Parser.Term.type,
-  ``Lean.Parser.Term.prop,
-  -- not really keywords
-  `antiquotName,
-  ``Lean.Parser.Command.docComment,
-  ``Lean.Parser.Command.moduleDoc]
-
 structure SemanticTokensContext where
   beginPos  : String.Pos
   endPos    : String.Pos
   text      : FileMap
   snap      : Snapshot
+  envAfter  : Environment
+  doc       : EditableDocument
 
 structure SemanticTokensState where
   data       : Array Nat
+  /-- LSP expects token positions to be relative to the last token. -/
   lastLspPos : Lsp.Position
 
--- TODO: make extensible, or don't
-def keywordSemanticTokenMap : RBMap String SemanticTokenType compare :=
-  RBMap.empty
-    |>.insert "sorry" .leanSorryLike
-    |>.insert "admit" .leanSorryLike
-    |>.insert "stop" .leanSorryLike
-    |>.insert "#exit" .leanSorryLike
+private abbrev SemanticTokenT (m : Type -> Type) (α : Type) := ReaderT SemanticTokensContext (StateT SemanticTokensState m) α
+private abbrev SemanticTokenM := SemanticTokenT RequestM
+
+
+-- TODO: Remove HasRange helper
+class HasRange (α : Type) extends ToString α where
+  range? : α -> Option String.Range
+instance: HasRange Syntax := ⟨Syntax.getRange?⟩
+instance: ToString String.Range := ⟨fun ⟨a, b⟩ => s!"({a} .. {b} : String.Range)"⟩
+instance: HasRange String.Range := ⟨Option.some⟩
+
+/-- Append a token for the range of `stx`. -/
+private def addToken [HasRange S] (stx : S) (type : SemanticTokenType) (mods : List SemanticTokenModifier := []) : SemanticTokenM PUnit := do
+  -- dbg_trace "addToken {stx} (({repr type} {repr mods}))"
+  let ⟨beginPos, endPos, text, _, _, _⟩ ← read
+  let some ⟨pos, tailPos⟩ := HasRange.range? stx
+    | return
+  unless beginPos <= pos && pos < endPos do
+    return
+  let lspPos := (← get).lastLspPos
+  let lspPos' := text.utf8PosToLspPos pos
+  let deltaLine := lspPos'.line - lspPos.line
+  let deltaStart := lspPos'.character - (if lspPos'.line == lspPos.line then lspPos.character else 0)
+  let length := (text.utf8PosToLspPos tailPos).character - lspPos'.character
+  let tokenType := type.toNat
+  let tokenModifiers := encodeSemanticTokenModifiers mods
+  let data := #[deltaLine, deltaStart, length, tokenType, tokenModifiers]
+  -- dbg_trace "addedToken {repr data}"
+  modify fun st => {
+    data := st.data ++ data
+    lastLspPos := lspPos'
+  }
+
+/-- Create a `Expr.const ci.name levels` where the levels are inferred from the expectedType
+  by comparing `ci.type` and `expectedType`. -/
+private def createConstFor (ci : ConstantInfo) (expectedType : Expr) : MetaM Expr := do
+  let mvars : List Level <- Meta.mkFreshLevelMVarsFor ci
+  let ty := ci.type.instantiateLevelParams ci.levelParams mvars
+  if <- Meta.isDefEq ty expectedType then
+    let levels <- mvars.mapM fun l => do
+      if let some level := <- Lean.getLevelMVarAssignment? l.mvarId! then
+        return level
+      else
+        -- dbg_trace "BUG: createConstFor failed, since a level mvar didn't get assigned."
+        return default
+    return Expr.const ci.name levels
+  else
+    -- dbg_trace "BUG createConstFor failed since isDefEq failed: {ty} =?= {expectedType}"
+    Meta.mkConstWithFreshMVarLevels ci.name
+
+private def miniWhnf (e : Expr) : MetaM Expr := do
+  let e := e.consumeTypeAnnotations
+  let e := e.consumeMData
+  -- unfold reducible definitions
+  let some e <- Meta.unfoldDefinition? e -- no `|>.getDM e` ? :(
+    | return e
+  return e
+
+/-- Analyzes the type (and the type's type) in order to apply `prop`, `type`, `proof` modifiers.
+  - If `ty` is `... -> Prop`, then `prop` is added.
+  - If `ty` is `... -> Type _`, then `type` is added.
+  - If `ty : Prop`, then `proof` is added.
+  -/
+private def helper (ty : Expr) : MetaM <| List SemanticTokenModifier := do
+  -- ty is of form `... -> F ...`
+  Meta.forallTelescope ty.consumeTypeAnnotations.consumeMData fun _ body => do
+    let mut mods := []
+    if ty.isForall then mods := .func :: mods
+    -- let body <- Meta.whnf body >>= instantiateMVars -- body is now `F ...`
+    -- let F <- Meta.whnf body.getAppFn >>= instantiateMVars
+    let body <- instantiateMVars body
+    let F := body.getAppFn.consumeTypeAnnotations.consumeMData
+
+    -- if (<- getEnv).contains ``Monad then
+    --   let tcType := .app (<- Meta.mkConstWithFreshMVarLevels ``Monad) F
+    --   if let some _ := <- Meta.synthInstance? tcType then
+    --     mods := .monadic :: mods
+    --   -- dbg_trace "ty is {ty}, body is {body}, F is {F}"
+    --   -- dbg_trace "tcType is {tcType}"
+
+    match F with
+    | .sort .zero => mods := .prop :: mods
+    | .sort _ => mods := .type :: mods
+    | _ => do
+      let tyty <- Meta.inferType ty >>= Meta.whnf >>= instantiateMVars
+      -- dbg_trace "helper ty is {ty}, F is {F}, tyty is {tyty}"
+      match tyty with
+      | .sort .zero => mods := .proof :: mods
+      | .sort _ => mods := .value :: mods
+      | _ => pure ()
+    return mods
+
+private def highlightConst (expr : Expr) : MetaM <| Option <| SemanticTokenType × List SemanticTokenModifier := do
+  let expr <- instantiateMVars expr
+  let .const name _levels := expr | panic! "highlightConst: expr needs to be Expr.const"
+  let some constInfo := (<- getEnv).find? name | return none
+    -- | dbg_trace "!BUG {stx} is const with name {name} but has no constant info in env."; return none
+  let mut mods <- Meta.inferType expr >>= instantiateMVars >>= helper -- infer `type`, `prop`, `value`, `proof`, `func` modifiers
+  match constInfo with
+  | .inductInfo info =>
+    if info.isUnsafe then mods := .unsafe :: mods
+    if info.isNested then mods := .nested :: mods
+    if info.isRec then mods := .nested :: mods
+    if info.isReflexive then mods := .reflexive :: mods
+    if Lean.isClass (<- getEnv) name then mods := .typeclass :: mods
+    if Lean.isStructureLike (<- getEnv) name then mods := .struct :: mods
+    return some (.type, mods)
+  | .ctorInfo info =>
+    if info.isUnsafe then mods := .«unsafe» :: mods
+    return some (.enumMember, mods)
+  | .defnInfo _info =>
+    if (<- getEnv).isProjectionFn name then mods := .proj :: mods
+    return some (.function, mods)
+  | .opaqueInfo info =>
+    if info.isUnsafe then mods := .«unsafe» :: mods
+    mods := .«partial» :: mods
+    return some (.function, mods)
+  | .axiomInfo info =>
+    if info.isUnsafe then mods := .«unsafe» :: mods
+    return some (.axiom, mods)
+  | .thmInfo _ => return some (.theorem, mods)
+  | .recInfo _info => return some (.recursor, mods)
+  | .quotInfo _info => return some (.quot, mods)
+
+/-- `envAfter` is used to resolve the names of auxDecls. -/
+private partial def highlightImp [HasRange S] (stx : S) (expr : Expr) (isBinder : Bool) (currNamespace : Name) : MetaM <| Option <| SemanticTokenType × List SemanticTokenModifier := do
+  let expr <- instantiateMVars expr
+  -- dbg_trace "highlightImp {stx} has expr {expr}"
+
+  -- -- If expr is an abbreviation, Meta.whnf will unroll it. If the result is a lambda telescope,
+  -- -- we enter it. If then the result is an application chain, inspect the application function.
+  -- -- If the function is a constant, inherit from that. Otherwise, pretend we are a def.
+  -- let expr <- Meta.whnf expr >>= instantiateMVars -- unroll abbrev
+
+  -- Meta.lambdaTelescope expr fun _abbrevFVars expr => do
+  -- Once this works decently enough, try moving some of the logic out of MetaM.
+  let mut mods := []
+  if isBinder then mods := SemanticTokenModifier.declaration :: mods
+  match expr.getAppFn with -- if `abbrev ListN := List Nat`, then expr `List Nat`.
+  | .sort .zero => return some (.sort0, [])
+  | .sort _ => return some (.sortN, [])
+  | .fvar fvarId => do
+    let some localDecl := (<- getLCtx).find? fvarId
+      | --dbg_trace "!BUG {stx} is an fvar, but not in ti.lctx"
+        return none
+    if localDecl.isLet then mods := .«let» :: mods
+    -- Recall that `isAuxDecl` is an auxiliary declaration used to elaborate a recursive definition.
+    if localDecl.isAuxDecl then
+      let constName := currNamespace ++ localDecl.userName
+      let some ci := (<- getEnv).find? constName -- I don't know what the proper way to resolve names is. This fails if we `def Nat.add`.
+        | return none
+        -- | dbg_trace "BUG env has no {constName} Have auxDecl with user name {localDecl.userName}, and currNamespace = {currNamespace}"; return none
+      let const <- createConstFor ci localDecl.type
+      let lctx' := (<- getLCtx).replaceFVarId localDecl.fvarId const
+      let expr' := expr.replaceFVarId localDecl.fvarId const
+      Meta.withLCtx lctx' (<- Meta.getLocalInstances) do
+        highlightImp stx expr' isBinder currNamespace -- retry
+    else
+      return some (.variable, (<- helper localDecl.type) ++ mods) -- TODO fix
+  | e@(.const ..) =>
+    let res <- highlightConst e
+    return res.map fun (tt, tm) => (tt, tm ++ mods)
+  | _ => do
+    -- dbg_trace "BUG {stx} fails to highlight :(, expr repr is {repr expr}. Doing Fallback."
+    -- fallback:
+    let ty <- Meta.inferType expr
+    mods := (<- helper ty) ++ mods
+    return some (.unknown, mods)
+
+/-- Get TermInfos relevant to this range. -/
+private def filterInfos (range : String.Range) : SemanticTokenM <| List (Elab.ContextInfo × Elab.TermInfo) := do
+  let tis := (← read).snap.infoTree.deepestNodes fun
+  | (ctxInfo : Elab.ContextInfo), i@(Elab.Info.ofTermInfo ti), _ => match i.pos? with
+    | some ipos => do
+      -- dbg_trace "** POS={ipos} ;; {i.stx} ;; rangeContains = {range.contains ipos}"
+      if range.contains ipos then some (ctxInfo, ti) else none
+    | _         => none
+  | _, _, _ => none
+  return tis
+
+/--
+  Highlight a piece of syntax, usually an identifier, but also operators, keywords, etc.
+
+  The `infos` are pre-filtered info tree nodes relevant to this syntax node. Can be more than one.
+-/
+private def highlight [HasRange S] (stx : S) (ti : Elab.TermInfo) (ctxInfo : Elab.ContextInfo) : SemanticTokenT RequestM Unit := do
+  -- let some range := stx.getRange?
+  --   | return
+  -- let tis <- filterInfos range
+  -- dbg_trace "#### HIGHLIGHT [{range.start}..{range.stop}] {stx} HAVE FILTERED INFOS {tis.map (fun (_, ti) => ti.expr)}"
+
+  -- let mut lastPos := range.start
+  -- for (ctxInfo, ti) in tis do
+  --   -- avoid reporting same position twice; the info node can occur multiple times if
+  --   -- e.g. the term is elaborated multiple times
+  --   -- TODO: smarter way of selecting which info(s) to use than just "first best".
+  --   let pos := ti.stx.getPos?.get!
+  --   if pos < lastPos then
+  --     continue
+  --   lastPos := pos
+
+    let envAfter := (<- read).envAfter
+    let res <- ctxInfo.runMetaM ti.lctx <| Meta.withReducible do
+      withEnv envAfter do
+        highlightImp stx ti.expr ti.isBinder ctxInfo.currNamespace
+    if let some (tt, tmods) := res then
+      addToken stx tt tmods
+
+open IO in
+def timeit' [MonadLiftT BaseIO m] [Monad m] (msg : Nat -> String) (f : m α) : m α := do
+  let _start <- monoNanosNow
+  let result <- f
+  let _finish <- monoNanosNow
+  -- dbg_trace "{msg ((finish - start) / 1000)}"
+  return result
+
+#check Prod.snd
+
+
+-- TODO: delete later
+private def dbgIndent : Nat -> String
+| .zero => ""
+| .succ k => ">" ++ dbgIndent k
+
+partial def dbgPrintInfoTree (tree : Elab.InfoTree) (d := 0) : RequestM String := do
+  let res <- match tree with
+  | .context _contextInfo sub =>
+    return s!"{dbgIndent d} IT.context ? \n{<- dbgPrintInfoTree sub (d+1)}"
+  | .hole _mvarId => pure s!"{dbgIndent d} IT.hole\n"
+  | .node info children =>
+    let xxx := match info with
+    | .ofTermInfo       i => s!".ofTermInfo       ‖{i.stx}‖ {i.expr}"
+    | .ofCommandInfo    i => s!".ofCommandInfo    ‖{i.stx}‖"
+    | .ofFieldInfo      i => s!".ofFieldInfo      ‖{i.stx}‖ projName = {i.projName}, val = {i.val}"
+    -- | .ofCompletionInfo i => s!".ofCompletionInfo ‖{i.stx}‖ ..."
+    | .ofFVarAliasInfo  i => s!".ofFVarAliasInfo            userName={i.userName} id={Expr.fvar i.id} baseId={Expr.fvar i.baseId} "
+    | _ => ".other"
+    let children := (<- children.mapM (dbgPrintInfoTree . (d+1))).toList
+    return s!"{dbgIndent d} IT.node $ {xxx}\n{children.map String.data |>.join |>.asString}"
+
+#synth ToString Syntax
+#check Syntax.instToStringSyntax
+#check Syntax.isOfKind
+#check Lean.Parser.Term.proj
+#check Lean.Parser.Term.app
 
 partial def handleSemanticTokens (beginPos endPos : String.Pos)
     : RequestM (RequestTask SemanticTokens) := do
@@ -432,72 +663,58 @@ partial def handleSemanticTokens (beginPos endPos : String.Pos)
   let t := doc.cmdSnaps.waitUntil (·.endPos >= endPos)
   mapTask t fun (snaps, _) =>
     StateT.run' (s := { data := #[], lastLspPos := ⟨0, 0⟩ : SemanticTokensState }) do
-      for s in snaps do
-        if s.endPos <= beginPos then
-          continue
-        ReaderT.run (r := SemanticTokensContext.mk beginPos endPos text s) <|
-          go s.stx
-      return { data := (← get).data }
+      timeit' (s!"handleSemanticTokens needed { · } µs") do
+        -- every command (`def`, `structure`, ...) results in its own snapshot.
+        for h : i in [0 : snaps.length] do
+          let s := snaps[i]'(by simp_all [Membership.mem])
+          if s.endPos <= beginPos then
+            continue
+          let sAfter := snaps[i + 1]?.getD s -- should always be fine, as files end with `Command.eoi`.
+          ReaderT.run (r := SemanticTokensContext.mk beginPos endPos text s sAfter.env doc) do
+            -- dbg_trace "#### SNAP {s.stx}"
+            let _dbg_tree : Elab.InfoTree := s.infoTree
+            -- dbg_trace s!"{<- dbgPrintInfoTree _dbg_tree}"
+            go s.stx
+        return { data := (← get).data }
 where
-  go (stx : Syntax) := do
+  go (stx : Syntax) (d : Nat := 0) : SemanticTokenM Unit := do
+    -- dbg_trace "{dbgIndent d}go {repr stx}"
     match stx with
-    | `($e.$id:ident)    => go e; addToken id SemanticTokenType.property
-    -- indistinguishable from next pattern
-    --| `(level|$id:ident) => addToken id SemanticTokenType.variable
-    | `($id:ident)       => highlightId id
+    | `($e₁.$e₂:ident) => do -- For example `NS.c.add`
+      -- dbg_trace "{dbgIndent d}go[$e₁.$e₂:ident] {stx}"
+      go e₁ (d + 1)
+      goIdent e₂ (d + 1)
+    | `($e₁.$e₂:fieldIdx) => do -- For example `NS.c.2`
+      -- dbg_trace "{dbgIndent d}go[$e₁.$e₂:fieldIdx] {stx}"
+      go e₁ (d + 1)
+      goIdent e₂ (d + 1)
+    | `(@$_:ident) | `(.$_:ident) =>
+      goIdent stx d
+    | `($e:ident) =>
+      goIdent e d
     | _ =>
-      if !noHighlightKinds.contains stx.getKind then
-        highlightKeyword stx
-        if stx.isOfKind choiceKind then
-          go stx[0]
-        else
-          stx.getArgs.forM go
-  highlightId (stx : Syntax) : ReaderT SemanticTokensContext (StateT SemanticTokensState RequestM) _ := do
-    if let some range := stx.getRange? then
-      let mut lastPos := range.start
-      for ti in (← read).snap.infoTree.deepestNodes (fun
-        | _, i@(Elab.Info.ofTermInfo ti), _ => match i.pos? with
-          | some ipos => if range.contains ipos then some ti else none
-          | _         => none
-        | _, _, _ => none) do
-        let pos := ti.stx.getPos?.get!
-        -- avoid reporting same position twice; the info node can occur multiple times if
-        -- e.g. the term is elaborated multiple times
-        if pos < lastPos then
-          continue
-        if let Expr.fvar fvarId .. := ti.expr then
-          if let some localDecl := ti.lctx.find? fvarId then
-            -- Recall that `isAuxDecl` is an auxiliary declaration used to elaborate a recursive definition.
-            if localDecl.isAuxDecl then
-              if ti.isBinder then
-                addToken ti.stx SemanticTokenType.function
-            else
-              addToken ti.stx SemanticTokenType.variable
-        else if ti.stx.getPos?.get! > lastPos then
-          -- any info after the start position: must be projection notation
-          addToken ti.stx SemanticTokenType.property
-          lastPos := ti.stx.getPos?.get!
-  highlightKeyword stx := do
-    if let Syntax.atom _ val := stx then
-      if (val.length > 0 && val.front.isAlpha) ||
-         -- Support for keywords of the form `#<alpha>...`
-         (val.length > 1 && val.front == '#' && (val.get ⟨1⟩).isAlpha) then
-        addToken stx (keywordSemanticTokenMap.findD val .keyword)
-  addToken stx type := do
-    let ⟨beginPos, endPos, text, _⟩ ← read
-    if let (some pos, some tailPos) := (stx.getPos?, stx.getTailPos?) then
-      if beginPos <= pos && pos < endPos then
-        let lspPos := (← get).lastLspPos
-        let lspPos' := text.utf8PosToLspPos pos
-        let deltaLine := lspPos'.line - lspPos.line
-        let deltaStart := lspPos'.character - (if lspPos'.line == lspPos.line then lspPos.character else 0)
-        let length := (text.utf8PosToLspPos tailPos).character - lspPos'.character
-        let tokenType := type.toNat
-        let tokenModifiers := 0
-        modify fun st => {
-          data := st.data ++ #[deltaLine, deltaStart, length, tokenType, tokenModifiers]
-          lastLspPos := lspPos'
-        }
+      if stx.isOfKind choiceKind then go stx[0] d
+      else stx.getArgs.forM (go . (d+1))
+
+  /-- Syntax nodes don't have enough granularity, for example `xs.length` with `xs : List α` is
+    represented as just one `Syntax.ident`.
+    There are `TermInfo`s available for `xs` and `length`, so use them to "chop up" the syntax node
+    then calling `highlight` on fake, more granular, syntax nodes.
+  -/
+  goIdent (stx : Syntax) (_d : Nat) : SemanticTokenM Unit := do
+    -- dbg_trace "{dbgIndent d}goIdent {repr stx}"
+    let some range := stx.getRange? | return
+    let infos <- filterInfos range
+    -- dbg_trace s!"goIdent {stx} infos are {infos.map (·.2.stx)}"
+    infos.forM fun (ci, ti) => do
+      highlight ti.stx ti ci
+
+    -- if let some info := infos.get? 0 then -- TODO: make not hacky
+    --   highlight info.2.stx info.2 info.1
+
+    -- let f := fun lhs (contextInfo, info) => do
+    --   highlight info.stx info contextInfo
+    -- let _ <- infos.foldlM f sorry
 
 def handleSemanticTokensFull (_ : SemanticTokensParams)
     : RequestM (RequestTask SemanticTokens) := do
@@ -510,6 +727,7 @@ def handleSemanticTokensRange (p : SemanticTokensRangeParams)
   let beginPos := text.lspPosToUtf8Pos p.range.start
   let endPos := text.lspPosToUtf8Pos p.range.end
   handleSemanticTokens beginPos endPos
+
 
 partial def handleFoldingRange (_ : FoldingRangeParams)
   : RequestM (RequestTask (Array FoldingRange)) := do

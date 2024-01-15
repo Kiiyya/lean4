@@ -225,15 +225,20 @@ structure SymbolInformation where
   containerName? : Option String := none
   deriving ToJson
 
+/-- Semantic token types such as `function` and `keyword`.
+  Many of these must be included as they stem from the LSP.
+-/
 inductive SemanticTokenType where
   -- Used by Lean
   | keyword
   | variable
   | property
+  /-- `def` -/
   | function
   /- Other types included by default in the LSP specification.
   Not used by the Lean core, but useful to users extending the Lean server. -/
   | namespace
+  /-- Any inductive types (includes structures and classes). -/
   | type
   | class
   | enum
@@ -254,14 +259,36 @@ inductive SemanticTokenType where
   | decorator
   -- Extensions
   | leanSorryLike
-  deriving ToJson, FromJson
+  /-- `Prop` -/
+  | sort0
+  /-- `Type` -/
+  | sortN
+  /-- Constants (`def`s which are not functions.) -/
+  | const
+  | proof
+  | value
+  | proposition
+  | axiom
+  | «theorem»
+  | unknown
+  | constructor
+  | recursor
+  | quot
+  deriving ToJson, FromJson, Repr, BEq
 
 -- must be in the same order as the constructors
 def SemanticTokenType.names : Array String :=
   #["keyword", "variable", "property", "function", "namespace", "type", "class",
     "enum", "interface", "struct", "typeParameter", "parameter", "enumMember",
     "event", "method", "macro", "modifier", "comment", "string", "number",
-    "regexp", "operator", "decorator", "leanSorryLike"]
+    "regexp", "operator", "decorator", "leanSorryLike",
+    "sort0", "sortN",
+    "const", "proof", "value", "proposition", "axiom", "theorem",
+    "unknown",
+    "constructor",
+    "recursor",
+    "quot"
+    ]
 
 def SemanticTokenType.toNat (type : SemanticTokenType) : Nat :=
   type.toCtorIdx
@@ -272,12 +299,13 @@ def SemanticTokenType.toNat (type : SemanticTokenType) : Nat :=
 --    names[v.toNat]?.map (toString <| toJson ·) = some (toString <| toJson v) := by
 --  cases v <;> native_decide
 
+
 /--
-The semantic token modifiers included by default in the LSP specification.
-Not used by the Lean core, but implementing them here allows them to be
-utilized by users extending the Lean server.
+  Token modifiers. Zero or more may be applied to a semantic token.
+  Undocumented modifiers are not in use, but are part of the standard LSP.
 -/
 inductive SemanticTokenModifier where
+  /-- Binders, such as the `x` in `(x : Nat) -> ...`, but also let, lambda, etc. -/
   | declaration
   | definition
   | readonly
@@ -288,20 +316,52 @@ inductive SemanticTokenModifier where
   | modification
   | documentation
   | defaultLibrary
-  deriving ToJson, FromJson
+  /-- `inductive T : ... -> Type` or `def T : ... -> Type := ...`. -/
+  | type
+  /-- `inductive P : ... -> Prop` or `def P : ... -> Prop := ...`. -/
+  | prop
+  /-- The `x` in `x : List α`, or a `theorem` or `def`. -/
+  | value
+  /-- The `h` in `h : n <= 5`, or a `theorem`, or `def`. -/
+  | proof
+  /-- `class` or `class inductive`. Also applied to instances of classes. -/
+  | typeclass
+  /-- Any inductive type `T` for which `instance : Monad T` exists. -/
+  | monadic
+  /-- Whether this def is a projection function `myStruct.projFn` or built-in projection `myStruct.1`. -/
+  | proj
+  /-- Whether the inductive type is structure-like. -/
+  | struct
+  /-- An fvar that is a let expression. -/
+  | «let»
+  | «partial»
+  | func
+  | «unsafe»
+  | nested
+  | recursive
+  | reflexive
+  deriving ToJson, FromJson, Repr, BEq
 
 -- must be in the same order as the constructors
 def SemanticTokenModifier.names : Array String :=
   #["declaration", "definition", "readonly", "static", "deprecated", "abstract",
-    "async", "modification", "documentation", "defaultLibrary"]
-
+    "async", "modification", "documentation", "defaultLibrary",
+    "type", "prop", "value", "proof",
+    "typeclass", "monadic",
+    "proj", "struct", "let", "partial", "func", "unsafe",
+    "nested", "recursive", "reflexive"
+  ]
 def SemanticTokenModifier.toNat (modifier : SemanticTokenModifier) : Nat :=
   modifier.toCtorIdx
 
+/-- Semantic token modifiers are encoded via a bitmap. -/
+def encodeSemanticTokenModifiers (modifiers : List SemanticTokenModifier) : Nat :=
+  modifiers.foldl (· ||| 1 <<< ·.toNat) 0
+
 -- sanity check
-example {v : SemanticTokenModifier} : open SemanticTokenModifier in
-    names[v.toNat]?.map (toString <| toJson ·) = some (toString <| toJson v) := by
-  cases v <;> native_decide
+-- example {v : SemanticTokenModifier} : open SemanticTokenModifier in
+--     names[v.toNat]?.map (toString <| toJson ·) = some (toString <| toJson v) := by
+  -- cases v <;> native_decide
 
 structure SemanticTokensLegend where
   tokenTypes : Array String
