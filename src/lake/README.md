@@ -36,7 +36,7 @@ Lake is part of the [lean4](https://github.com/leanprover/lean4) repository and 
 
 ## Creating and Building a Package
 
-To create a new package, either run `lake init <package-name> [<template>]` to setup the package in the current directory or `lake new <package-name> [<template>]` to create it in a new directory. For example, we could create the package `hello` like so:
+To create a new package, either run `lake init` to setup the package in the current directory or `lake new` to create it in a new directory. For example, we could create the package `hello` like so:
 
 ```
 $ mkdir hello
@@ -115,7 +115,22 @@ $ ./.lake/build/bin/hello
 Hello, world!
 ```
 
-Examples of different package configurations can be found in the [`examples`](examples) folder of this repository. You can also specified a particular configuration file template when using `lake init` or `lake new` to control what files Lake creates. See `lake help init` or `lake help new` for details.
+Examples of different package configurations can be found in the [`examples`](examples) folder of this repository. You can also pass a package template tp `lake init` or `lake new` to control what files Lake creates. For example, instead of using a Lean configuration file for this package, one could produce a TOML version via `lake new hello .toml`.
+
+**lakefile.toml**
+```toml
+name = "hello"
+defaultTargets = ["hello"]
+
+[[lean_lib]]
+name = "Hello"
+
+[[lean_exe]]
+name = "hello"
+root = "Main"
+```
+
+See `lake help init` or `lake help new` for more details on other template options.
 
 ## Glossary of Terms
 
@@ -141,7 +156,7 @@ Lake uses a lot of terms common in software development -- like workspace, packa
 
 * A **facet** is an element built from another organizational unit (e.g., a package, module, library, etc.). For instance, Lake produces `olean`, `ilean`, `c`, and `o` files all from a single module. Each of these components are thus termed a *facet* of the module. Similarly, Lake can build both static and shared binaries from a library. Thus, libraries have both `static` and `shared` facets. Lake also allows users to define their own custom facets to build from modules and packages, but this feature is currently experimental and not yet documented.
 
-* A **trace** is a piece of data (generally a hash) which is used to verify whether a given target is up-to-date (i.e., does not not need to be rebuilt). If the trace stored with a built target matches the trace computed during build, then a target is considered up-to-date. A target's trace is derived from its various **inputs** (e.g., source file, Lean toolchain, imports, etc.).
+* A **trace** is a piece of data (generally a hash) which is used to verify whether a given target is up-to-date (i.e., does not need to be rebuilt). If the trace stored with a built target matches the trace computed during build, then a target is considered up-to-date. A target's trace is derived from its various **inputs** (e.g., source file, Lean toolchain, imports, etc.).
 
 ## Package Configuration Options
 
@@ -195,6 +210,12 @@ lean_lib «target-name» where
   -- configuration options go here
 ```
 
+```toml
+[[lean_lib]]
+name = "«target-name»"
+# more configuration options go here
+```
+
 **Configuration Options**
 
 * `srcDir`: The subdirectory of the package's source directory containing the library's source files. Defaults to the package's `srcDir`. (This will be passed to `lean` as the `-R` option.)
@@ -203,7 +224,7 @@ lean_lib «target-name» where
 * `libName`: The `String` name of the library. Used as a base for the file names of its static and dynamic binaries. Defaults to the name of the target.
 * `extraDepTargets`: An `Array` of [target](#custom-targets) names to build before the library's modules.
 * `defaultFacets`: An `Array` of library facets to build on a bare `lake build` of the library. For example, setting this to `#[LeanLib.sharedLib]` will build the shared library facet.
-* `nativeFacets`: An `Array` of [module facets](#defining-new-facets) to build and combine into the library's static and shared libraries. Defaults to ``#[Module.oFacet]`` (i.e., the object file compiled from the Lean source).
+* `nativeFacets`: A function `(shouldExport : Bool) → Array` determining the [module facets](#defining-new-facets) to build and combine into the library's static and shared libraries. If `shouldExport` is true, the module facets should export any symbols a user may expect to lookup in the library. For example, the Lean interpreter will use exported symbols in linked libraries. Defaults to a singleton of `Module.oExportFacet` (if `shouldExport`) or `Module.oFacet`. That is, the object files compiled from the Lean sources, potentially with exported Lean symbols.
 * `platformIndependent`, `precompileModules`, `buildType`, `leanOptions`, `<more|weak><Lean|Leanc|Link>Args`, `moreServerOptions`: Augments the package's corresponding configuration option. The library's arguments come after, modules are precompiled if either the library or package are, `platformIndependent` falls back to the package on `none`, and the build type is the minimum of the two (`debug` is the lowest, and `release` is the highest).
 
 ### Binary Executables
@@ -217,14 +238,20 @@ lean_exe «target-name» where
   -- configuration options go here
 ```
 
+```toml
+[[lean_exe]]
+name = "«target-name»"
+# more configuration options go here
+```
+
 **Configuration Options**
 
 * `srcDir`: The subdirectory of the package's source directory containing the executable's source file. Defaults to the package's `srcDir`. (This will be passed to `lean` as the `-R` option.)
 * `root`: The root module `Name` of the binary executable. Should include a `main` definition that will serve as the entry point of the program. The root is built by recursively building its local imports (i.e., fellow modules of the workspace). Defaults to the name of the target.
 * `exeName`: The `String` name of the binary executable. Defaults to the target name with any `.` replaced with a `-`.
 * `extraDepTargets`: An `Array` of [target](#custom-targets) names to build before the executable's modules.
-* `nativeFacets`: An `Array` of [module facets](#defining-new-facets) to build and combine into the executable. Defaults to ``#[Module.oFacet]`` (i.e., the object file compiled from the Lean source).
-* `supportInterpreter`: Whether to expose symbols within the executable to the Lean interpreter. This allows the executable to interpret Lean files (e.g., via `Lean.Elab.runFrontend`). Implementation-wise, this passes `-rdynamic` to the linker when building on a non-Windows systems. Defaults to `false`.
+* `nativeFacets`: A function `(shouldExport : Bool) → Array` determining the [module facets](#defining-new-facets) to build and link into the executable. If `shouldExport` is true, the module facets should export any symbols a user may expect to lookup in the library. For example, the Lean interpreter will use exported symbols in linked libraries. Defaults to a singleton of `Module.oExportFacet` (if `shouldExport`) or `Module.oFacet`. That is, the object file compiled from the Lean source, potentially with exported Lean symbols.
+* `supportInterpreter`: Whether to expose symbols within the executable to the Lean interpreter. This allows the executable to interpret Lean files (e.g., via `Lean.Elab.runFrontend`). Implementation-wise, on Windows, the Lean shared libraries are linked to the executable and, on other systems, the executable is linked with `-rdynamic`. This increases the size of the binary on Linux and, on Windows, requires `libInit_shared.dll` and `libleanshared.dll` to be co-located with the executable or part of `PATH` (e.g., via `lake exe`). Thus, this feature should only be enabled when necessary. Defaults to `false`.
 * `platformIndependent`, `precompileModules`, `buildType`, `leanOptions`, `<more|weak><Lean|Leanc|Link>Args`, `moreServerOptions`: Augments the package's corresponding configuration option. The library's arguments come after, modules are precompiled if either the library or package are, `platformIndependent` falls back to the package on `none`, and the build type is the minimum of the two (`debug` is the lowest, and `release` is the highest).
 
 ### External Libraries
@@ -303,6 +330,19 @@ require bar from git "url.git"@"rev"/"optional"/"path-to"/"dir-with-pkg"
 The first form adds a local dependency and the second form adds a Git dependency. For a Git dependency, the revision can be a commit hash, branch, or tag. Also, the `@"rev"` and `/"path-to"/"term"` parts of the `require` are optional.
 
 Both forms also support an optional `with` clause to specify arguments to pass to the dependency's package configuration (i.e., same as `args` in a `lake build -- <args...>` invocation). The elements of both the `from` and `with` clauses are proper terms so normal computation is supported within them (though parentheses made be required to disambiguate the syntax).
+
+To `require` a package in a TOML configuration, the equivalent syntax is:
+
+```toml
+[[require]]
+path = "path/to/local/package"
+options = {}
+
+[[require]]
+git = "url.git"
+rev = "rev"
+subDir = "optional/path-to/dir-with-pkg"
+```
 
 ## GitHub Release Builds
 

@@ -4,6 +4,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 
 Authors: Wojciech Nawrocki
 -/
+prelude
 import Lean.PrettyPrinter
 
 namespace Lean.Elab
@@ -84,7 +85,28 @@ where go ctx? a
       | none => a
       | some ctx => f ctx i a
     ts.foldl (init := a) (go <| i.updateContext? ctx?)
-  | _ => a
+  | hole _ => a
+
+/--
+Fold an info tree as follows, while ensuring that the correct `ContextInfo` is supplied at each stage:
+
+ * Nodes are combined with the initial value `init` using `f`, and the result is then combined with the children using a left fold
+ * On InfoTree holes, we just return the initial value.
+
+This is like `InfoTree.foldInfo`, but it also passes the whole node to `f` instead of just the head.
+-/
+partial def InfoTree.foldInfoTree (init : α) (f : ContextInfo → InfoTree → α → α) : InfoTree → α :=
+  go none init
+where
+  /-- `foldInfoTree.go` is like `foldInfoTree` but with an additional outer context parameter `ctx?`. -/
+  go ctx? a
+  | context ctx t => go (ctx.mergeIntoOuter? ctx?) a t
+  | t@(node i ts) =>
+    let a := match ctx? with
+      | none => a
+      | some ctx => f ctx t a
+    ts.foldl (init := a) (go <| i.updateContext? ctx?)
+  | hole _ => a
 
 def Info.isTerm : Info → Bool
   | ofTermInfo _ => true
@@ -144,10 +166,10 @@ def Info.isSmaller (i₁ i₂ : Info) : Bool :=
   | some _, none => true
   | _, _ => false
 
-def Info.occursBefore? (i : Info) (hoverPos : String.Pos) : Option String.Pos := do
-  let tailPos ← i.tailPos?
-  guard (tailPos ≤ hoverPos)
-  return hoverPos - tailPos
+def Info.occursDirectlyBefore (i : Info) (hoverPos : String.Pos) : Bool := Id.run do
+  let some tailPos := i.tailPos?
+    | return false
+  return tailPos == hoverPos
 
 def Info.occursInside? (i : Info) (hoverPos : String.Pos) : Option String.Pos := do
   let headPos ← i.pos?
@@ -230,7 +252,7 @@ def Info.docString? (i : Info) : MetaM (Option String) := do
     if let some decl := (← getOptionDecls).find? oi.optionName then
       return decl.descr
     return none
-  | .ofOmissionInfo _ => return none -- Do not display the docstring of ⋯ for omitted terms
+  | .ofOmissionInfo { reason := s, .. } => return s -- Show the omission reason for the docstring.
   | _ => pure ()
   if let some ei := i.toElabInfo? then
     return ← findDocString? env ei.stx.getKind <||> findDocString? env ei.elaborator
@@ -376,7 +398,7 @@ where go ci?
   | .node i cs =>
     match ci?, i with
     | some ci, .ofTermInfo ti
-    | some ci, .ofOmissionInfo { toTermInfo := ti } => do
+    | some ci, .ofOmissionInfo { toTermInfo := ti, .. } => do
       let expr ← ti.runMetaM ci (instantiateMVars ti.expr)
       return expr.hasSorry
       -- we assume that `cs` are subterms of `ti.expr` and

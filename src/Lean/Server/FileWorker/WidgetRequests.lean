@@ -4,6 +4,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 
 Authors: Wojciech Nawrocki
 -/
+prelude
 import Lean.Widget.Basic
 import Lean.Widget.InteractiveCode
 import Lean.Widget.InteractiveGoal
@@ -54,7 +55,7 @@ def makePopup : WithRpcRef InfoWithCtx → RequestM (RequestTask InfoPopup)
       let exprExplicit? ← match i.info with
         | Elab.Info.ofTermInfo ti =>
           pure <| some <| ← ppExprTaggedWithoutTopLevelHighlight ti.expr (explicit := true)
-        | Elab.Info.ofOmissionInfo { toTermInfo := ti } =>
+        | Elab.Info.ofOmissionInfo { toTermInfo := ti, .. } =>
           -- Omitted terms are simply to be expanded, not printed explicitly.
           -- Keep the top-level tag so that users can also see the explicit version
           -- of the omitted term.
@@ -99,28 +100,6 @@ structure GetInteractiveDiagnosticsParams where
   otherwise return all diagnostics. -/
   lineRange? : Option Lsp.LineRange
   deriving Inhabited, FromJson, ToJson
-
-open RequestM in
-def getInteractiveDiagnostics (params : GetInteractiveDiagnosticsParams) : RequestM (RequestTask (Array InteractiveDiagnostic)) := do
-  let doc ← readDoc
-  let rangeEnd := params.lineRange?.map fun range =>
-    doc.meta.text.lspPosToUtf8Pos ⟨range.«end», 0⟩
-  let t := doc.cmdSnaps.waitUntil fun snap => rangeEnd.any (snap.endPos >= ·)
-  pure <| t.map fun (snaps, _) =>
-    let diags? := snaps.getLast?.map fun snap =>
-      snap.interactiveDiags.toArray.filter fun diag =>
-        params.lineRange?.all fun ⟨s, e⟩ =>
-          -- does [s,e) intersect [diag.fullRange.start.line,diag.fullRange.end.line)?
-          s ≤ diag.fullRange.start.line ∧ diag.fullRange.start.line < e ∨
-          diag.fullRange.start.line ≤ s ∧ s < diag.fullRange.end.line
-    pure <| diags?.getD #[]
-
-builtin_initialize
-  registerBuiltinRpcProcedure
-    `Lean.Widget.getInteractiveDiagnostics
-    GetInteractiveDiagnosticsParams
-    (Array InteractiveDiagnostic)
-    getInteractiveDiagnostics
 
 structure GetGoToLocationParams where
   kind : GoToKind

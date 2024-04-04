@@ -4,6 +4,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 
 Authors: Wojciech Nawrocki, Marc Huisinga
 -/
+prelude
 import Lean.DeclarationRange
 
 import Lean.Data.Json
@@ -34,13 +35,34 @@ def handleCompletion (p : CompletionParams)
   -- such as a trailing dot after an option name. This shouldn't be a problem since any subsequent
   -- command starts with a keyword that (currently?) does not participate in completion.
   withWaitFindSnap doc (·.endPos + ' ' >= pos)
-    (notFoundX := pure { items := #[], isIncomplete := true })
-    (abortedX :=
+    (notFoundX :=
       -- work around https://github.com/microsoft/vscode/issues/155738
-      pure { items := #[{label := "-"}], isIncomplete := true }) fun snap => do
-      if let some r ← Completion.find? doc.meta.text pos snap.infoTree caps then
+      -- this is important when a snapshot cannot be found because it was aborted
+      pure { items := #[{label := "-"}], isIncomplete := true })
+    (x := fun snap => do
+      if let some r ← Completion.find? p doc.meta.text pos snap.infoTree caps then
         return r
-      return { items := #[ ], isIncomplete := true }
+      return { items := #[ ], isIncomplete := true })
+
+/--
+Handles `completionItem/resolve` requests that are sent by the client after the user selects
+a completion item that was provided by `textDocument/completion`. Resolving the item fills the
+`detail?` field of the item with the pretty-printed type.
+This control flow is necessary because pretty-printing the type for every single completion item
+(even those never selected by the user) is inefficient.
+-/
+def handleCompletionItemResolve (item : CompletionItem)
+    : RequestM (RequestTask CompletionItem) := do
+  let doc ← readDoc
+  let text := doc.meta.text
+  let some (data : CompletionItemDataWithId) := item.data?.bind fun data => (fromJson? data).toOption
+    | return .pure item
+  let some id := data.id?
+    | return .pure item
+  let pos := text.lspPosToUtf8Pos data.params.position
+  withWaitFindSnap doc (·.endPos + ' ' >= pos)
+    (notFoundX := pure item)
+    (x := fun snap => Completion.resolveCompletionItem? text pos snap.infoTree item id)
 
 open Elab in
 def handleHover (p : HoverParams)
@@ -398,10 +420,10 @@ where
         toDocumentSymbols text stxs syms stack
 
 structure SemanticTokensContext where
-  beginPos  : String.Pos
-  endPos    : String.Pos
-  text      : FileMap
-  snap      : Snapshot
+  beginPos : String.Pos
+  endPos?  : Option String.Pos
+  text     : FileMap
+  snap     : Snapshot
   envAfter  : Environment
   doc       : EditableDocument
 
@@ -424,10 +446,10 @@ instance: HasRange String.Range := ⟨Option.some⟩
 /-- Append a token for the range of `stx`. -/
 private def addToken [HasRange S] (stx : S) (type : SemanticTokenType) (mods : List SemanticTokenModifier := []) : SemanticTokenM PUnit := do
   -- dbg_trace "addToken {stx} (({repr type} {repr mods}))"
-  let ⟨beginPos, endPos, text, _, _, _⟩ ← read
+  let ⟨beginPos, endPos?, text, _, _, _⟩ ← read
   let some ⟨pos, tailPos⟩ := HasRange.range? stx
     | return
-  unless beginPos <= pos && pos < endPos do
+  unless beginPos <= pos && endPos?.all (pos < ·)  do
     return
   let lspPos := (← get).lastLspPos
   let lspPos' := text.utf8PosToLspPos pos
@@ -656,27 +678,36 @@ partial def dbgPrintInfoTree (tree : Elab.InfoTree) (d := 0) : RequestM String :
 #check Lean.Parser.Term.proj
 #check Lean.Parser.Term.app
 
-partial def handleSemanticTokens (beginPos endPos : String.Pos)
+partial def handleSemanticTokens (beginPos : String.Pos) (endPos? : Option String.Pos)
     : RequestM (RequestTask SemanticTokens) := do
   let doc ← readDoc
-  let text := doc.meta.text
-  let t := doc.cmdSnaps.waitUntil (·.endPos >= endPos)
-  mapTask t fun (snaps, _) =>
+  match endPos? with
+  | none =>
+    -- Only grabs the finished prefix so that we do not need to wait for elaboration to complete
+    -- for the full file before sending a response. This means that the response will be incomplete,
+    -- which we mitigate by regularly sending `workspace/semanticTokens/refresh` requests in the
+    -- `FileWorker` to tell the client to re-compute the semantic tokens.
+    let (snaps, _) ← doc.cmdSnaps.getFinishedPrefix
+    asTask <| run doc snaps
+  | some endPos =>
+    let t := doc.cmdSnaps.waitUntil (·.endPos >= endPos)
+    mapTask t fun (snaps, _) => run doc snaps
+where
+  run doc snaps : RequestM SemanticTokens :=
     StateT.run' (s := { data := #[], lastLspPos := ⟨0, 0⟩ : SemanticTokensState }) do
       timeit' (s!"handleSemanticTokens needed { · } µs") do
         -- every command (`def`, `structure`, ...) results in its own snapshot.
         for h : i in [0 : snaps.length] do
-          let s := snaps[i]'(by simp_all [Membership.mem])
+          let s := snaps[i]
           if s.endPos <= beginPos then
             continue
           let sAfter := snaps[i + 1]?.getD s -- should always be fine, as files end with `Command.eoi`.
-          ReaderT.run (r := SemanticTokensContext.mk beginPos endPos text s sAfter.env doc) do
+          ReaderT.run (r := SemanticTokensContext.mk beginPos endPos? doc.meta.text s sAfter.env doc) do
             -- dbg_trace "#### SNAP {s.stx}"
             let _dbg_tree : Elab.InfoTree := s.infoTree
             -- dbg_trace s!"{<- dbgPrintInfoTree _dbg_tree}"
             go s.stx
         return { data := (← get).data }
-where
   go (stx : Syntax) (d : Nat := 0) : SemanticTokenM Unit := do
     -- dbg_trace "{dbgIndent d}go {repr stx}"
     match stx with
@@ -718,7 +749,7 @@ where
 
 def handleSemanticTokensFull (_ : SemanticTokensParams)
     : RequestM (RequestTask SemanticTokens) := do
-  handleSemanticTokens 0 ⟨1 <<< 31⟩
+  handleSemanticTokens 0 none
 
 def handleSemanticTokensRange (p : SemanticTokensRangeParams)
     : RequestM (RequestTask SemanticTokens) := do
@@ -822,22 +853,78 @@ partial def handleWaitForDiagnostics (p : WaitForDiagnosticsParams)
   let t ← RequestM.asTask waitLoop
   RequestM.bindTask t fun doc? => do
     let doc ← liftExcept doc?
-    let t₁ := doc.cmdSnaps.waitAll
-    return t₁.map fun _ => pure WaitForDiagnostics.mk
+    return doc.reporter.map fun _ => pure WaitForDiagnostics.mk
 
 builtin_initialize
-  registerLspRequestHandler "textDocument/waitForDiagnostics"   WaitForDiagnosticsParams   WaitForDiagnostics      handleWaitForDiagnostics
-  registerLspRequestHandler "textDocument/completion"           CompletionParams           CompletionList          handleCompletion
-  registerLspRequestHandler "textDocument/hover"                HoverParams                (Option Hover)          handleHover
-  registerLspRequestHandler "textDocument/declaration"          TextDocumentPositionParams (Array LocationLink)    (handleDefinition GoToKind.declaration)
-  registerLspRequestHandler "textDocument/definition"           TextDocumentPositionParams (Array LocationLink)    (handleDefinition GoToKind.definition)
-  registerLspRequestHandler "textDocument/typeDefinition"       TextDocumentPositionParams (Array LocationLink)    (handleDefinition GoToKind.type)
-  registerLspRequestHandler "textDocument/documentHighlight"    DocumentHighlightParams    DocumentHighlightResult handleDocumentHighlight
-  registerLspRequestHandler "textDocument/documentSymbol"       DocumentSymbolParams       DocumentSymbolResult    handleDocumentSymbol
-  registerLspRequestHandler "textDocument/semanticTokens/full"  SemanticTokensParams       SemanticTokens          handleSemanticTokensFull
-  registerLspRequestHandler "textDocument/semanticTokens/range" SemanticTokensRangeParams  SemanticTokens          handleSemanticTokensRange
-  registerLspRequestHandler "textDocument/foldingRange"         FoldingRangeParams         (Array FoldingRange)    handleFoldingRange
-  registerLspRequestHandler "$/lean/plainGoal"                  PlainGoalParams            (Option PlainGoal)      handlePlainGoal
-  registerLspRequestHandler "$/lean/plainTermGoal"              PlainTermGoalParams        (Option PlainTermGoal)  handlePlainTermGoal
+  registerLspRequestHandler
+    "textDocument/waitForDiagnostics"
+    WaitForDiagnosticsParams
+    WaitForDiagnostics
+    handleWaitForDiagnostics
+  registerLspRequestHandler
+    "textDocument/completion"
+    CompletionParams
+    CompletionList
+    handleCompletion
+  registerLspRequestHandler
+    "completionItem/resolve"
+    CompletionItem
+    CompletionItem
+    handleCompletionItemResolve
+  registerLspRequestHandler
+    "textDocument/hover"
+    HoverParams
+    (Option Hover)
+    handleHover
+  registerLspRequestHandler
+    "textDocument/declaration"
+    TextDocumentPositionParams
+    (Array LocationLink)
+    (handleDefinition GoToKind.declaration)
+  registerLspRequestHandler
+    "textDocument/definition"
+    TextDocumentPositionParams
+    (Array LocationLink)
+    (handleDefinition GoToKind.definition)
+  registerLspRequestHandler
+    "textDocument/typeDefinition"
+    TextDocumentPositionParams
+    (Array LocationLink)
+    (handleDefinition GoToKind.type)
+  registerLspRequestHandler
+    "textDocument/documentHighlight"
+    DocumentHighlightParams
+    DocumentHighlightResult
+    handleDocumentHighlight
+  registerLspRequestHandler
+    "textDocument/documentSymbol"
+    DocumentSymbolParams
+    DocumentSymbolResult
+    handleDocumentSymbol
+  registerLspRequestHandler
+    "textDocument/semanticTokens/full"
+    SemanticTokensParams
+    SemanticTokens
+    handleSemanticTokensFull
+  registerLspRequestHandler
+    "textDocument/semanticTokens/range"
+    SemanticTokensRangeParams
+    SemanticTokens
+    handleSemanticTokensRange
+  registerLspRequestHandler
+    "textDocument/foldingRange"
+    FoldingRangeParams
+    (Array FoldingRange)
+    handleFoldingRange
+  registerLspRequestHandler
+    "$/lean/plainGoal"
+    PlainGoalParams
+    (Option PlainGoal)
+    handlePlainGoal
+  registerLspRequestHandler
+    "$/lean/plainTermGoal"
+    PlainTermGoalParams
+    (Option PlainTermGoal)
+    handlePlainTermGoal
 
 end Lean.Server.FileWorker

@@ -3,6 +3,8 @@ Copyright (c) 2021 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
+import Lean.Meta.CtorRecognizer
 import Lean.Meta.Match.Match
 import Lean.Meta.Match.MatchEqsExt
 import Lean.Meta.Tactic.Apply
@@ -13,6 +15,35 @@ import Lean.Meta.Tactic.Injection
 import Lean.Meta.Tactic.Contradiction
 
 namespace Lean.Meta
+
+/--
+A custom, approximated, and quick `contradiction` tactic.
+It only finds contradictions of the form `(h₁ : p)` and `(h₂ : ¬ p)` where
+`p`s are structurally equal. The procedure is not quadratic like `contradiction`.
+
+We use it to improve the performance of `proveSubgoalLoop` at `mkSplitterProof`.
+We will eventually have to write more efficient proof automation for this module.
+The new proof automation should exploit the structure of the generated goals and avoid general purpose tactics
+such as `contradiction`.
+-/
+private def _root_.Lean.MVarId.contradictionQuick (mvarId : MVarId) : MetaM Bool := do
+  mvarId.withContext do
+    let mut posMap : HashMap Expr FVarId := {}
+    let mut negMap : HashMap Expr FVarId := {}
+    for localDecl in (← getLCtx) do
+      unless localDecl.isImplementationDetail do
+        if let some p ← matchNot? localDecl.type then
+          if let some pFVarId := posMap.find? p then
+            mvarId.assign (← mkAbsurd (← mvarId.getType) (mkFVar pFVarId) localDecl.toExpr)
+            return true
+          negMap := negMap.insert p localDecl.fvarId
+        if (← isProp localDecl.type) then
+          if let some nFVarId := negMap.find? localDecl.type then
+            mvarId.assign (← mkAbsurd (← mvarId.getType) localDecl.toExpr (mkFVar nFVarId))
+            return true
+          posMap := posMap.insert localDecl.type localDecl.fvarId
+      pure ()
+    return false
 
 /--
   Helper method for `proveCondEqThm`. Given a goal of the form `C.rec ... xMajor = rhs`,
@@ -79,6 +110,8 @@ def unfoldNamedPattern (e : Expr) : MetaM Expr := do
   - `type` is the resulting type for `altType`.
 
   We use the `mask` to build the splitter proof. See `mkSplitterProof`.
+
+  This can be used to use the alternative of a match expression in its splitter.
 -/
 partial def forallAltTelescope (altType : Expr) (altNumParams numDiscrEqs : Nat)
     (k : (ys : Array Expr) → (eqs : Array Expr) → (args : Array Expr) → (mask : Array Bool) → (type : Expr) → MetaM α)
@@ -101,9 +134,11 @@ where
                let some k  := args.getIdx? lhs | unreachable!
                let mask    := mask.set! k false
                let args    := args.map fun arg => if arg == lhs then rhs else arg
-               let args    := args.push (← mkEqRefl rhs)
+               let arg     ← mkEqRefl rhs
                let typeNew := typeNew.replaceFVar lhs rhs
-               return (← go ys eqs args (mask.push false) (i+1) typeNew)
+               return ← withReplaceFVarId lhs.fvarId! rhs do
+                withReplaceFVarId y.fvarId! arg do
+                  go ys eqs (args.push arg) (mask.push false) (i+1) typeNew
           go (ys.push y) eqs (args.push y) (mask.push true) (i+1) typeNew
       else
         let arg ← if let some (_, _, rhs) ← matchEq? d then
@@ -121,7 +156,9 @@ where
          they are not eagerly evaluated. -/
       if ys.size == 1 then
         if (← inferType ys[0]!).isConstOf ``Unit && !(← dependsOn type ys[0]!.fvarId!) then
-          return (← k #[] #[] #[mkConst ``Unit.unit] #[false] type)
+          let rhs := mkConst ``Unit.unit
+          return ← withReplaceFVarId ys[0]!.fvarId! rhs do
+          return (← k #[] #[] #[rhs] #[false] type)
       k ys eqs args mask type
 
   isNamedPatternProof (type : Expr) (h : Expr) : Bool :=
@@ -220,7 +257,7 @@ private def processNextEq : M Bool := do
           return true
         -- If it is not possible, we try to show the hypothesis is redundant by substituting even variables that are not at `s.xs`, and then use contradiction.
         else
-          match lhs.isConstructorApp? (← getEnv), rhs.isConstructorApp? (← getEnv) with
+          match (← isConstructorApp? lhs), (← isConstructorApp? rhs) with
           | some lhsCtor, some rhsCtor =>
             if lhsCtor.name != rhsCtor.name then
               return false -- If the constructors are different, we can discard the hypothesis even if it a heterogeneous equality
@@ -348,14 +385,14 @@ private def injectionAnyCandidate? (type : Expr) : MetaM (Option (Expr × Expr))
       return some (lhs, rhs)
   return none
 
-private def injectionAny (mvarId : MVarId) : MetaM InjectionAnyResult :=
+private def injectionAny (mvarId : MVarId) : MetaM InjectionAnyResult := do
   mvarId.withContext do
     for localDecl in (← getLCtx) do
       if let some (lhs, rhs) ← injectionAnyCandidate? localDecl.type then
         unless (← isDefEq lhs rhs) do
           let lhs ← whnf lhs
           let rhs ← whnf rhs
-          unless lhs.isNatLit && rhs.isNatLit do
+          unless lhs.isRawNatLit && rhs.isRawNatLit do
             try
               match (← injection mvarId localDecl.fvarId) with
               | InjectionResult.solved  => return InjectionAnyResult.solved
@@ -566,6 +603,8 @@ where
 
   proveSubgoalLoop (mvarId : MVarId) : MetaM Unit := do
     trace[Meta.Match.matchEqs] "proveSubgoalLoop\n{mvarId}"
+    if (← mvarId.contradictionQuick) then
+      return ()
     match (← injectionAny mvarId) with
     | InjectionAnyResult.solved => return ()
     | InjectionAnyResult.failed =>
@@ -610,7 +649,15 @@ where
 private partial def mkEquationsFor (matchDeclName : Name) :  MetaM MatchEqns := withLCtx {} {} do
   trace[Meta.Match.matchEqs] "mkEquationsFor '{matchDeclName}'"
   withConfig (fun c => { c with etaStruct := .none }) do
+  /-
+  Remark: user have requested the `split` tactic to be available for writing code.
+  Thus, the `splitter` declaration must be a definition instead of a theorem.
+  Moreover, the `splitter` is generated on demand, and we currently
+  can't import the same definition from different modules. Thus, we must
+  keep `splitter` as a private declaration to prevent import failures.
+  -/
   let baseName := mkPrivateName (← getEnv) matchDeclName
+  let splitterName := baseName ++ `splitter
   let constInfo ← getConstInfo matchDeclName
   let us := constInfo.levelParams.map mkLevelParam
   let some matchInfo ← getMatcherInfo? matchDeclName | throwError "'{matchDeclName}' is not a matcher function"
@@ -681,7 +728,6 @@ private partial def mkEquationsFor (matchDeclName : Name) :  MetaM MatchEqns := 
       let template ← deltaExpand template (· == constInfo.name)
       let template := template.headBeta
       let splitterVal ← mkLambdaFVars splitterParams (← mkSplitterProof matchDeclName template alts altsNew splitterAltNumParams altArgMasks)
-      let splitterName := baseName ++ `splitter
       addAndCompile <| Declaration.defnDecl {
         name        := splitterName
         levelParams := constInfo.levelParams

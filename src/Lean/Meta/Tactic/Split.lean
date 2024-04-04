@@ -3,6 +3,8 @@ Copyright (c) 2021 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
+import Lean.Meta.Match.MatcherApp.Basic
 import Lean.Meta.Tactic.Simp.Main
 import Lean.Meta.Tactic.SplitIf
 import Lean.Meta.Tactic.Apply
@@ -19,7 +21,8 @@ def getSimpMatchContext : MetaM Simp.Context :=
    }
 
 def simpMatch (e : Expr) : MetaM Simp.Result := do
-  (·.1) <$> Simp.main e (← getSimpMatchContext) (methods := { pre, discharge? := SplitIf.discharge? })
+  let discharge? ← SplitIf.mkDischarge?
+  (·.1) <$> Simp.main e (← getSimpMatchContext) (methods := { pre, discharge? })
 where
   pre (e : Expr) : SimpM Simp.Step := do
     unless (← isMatcherApp e) do
@@ -36,7 +39,8 @@ def simpMatchTarget (mvarId : MVarId) : MetaM MVarId := mvarId.withContext do
   applySimpResultToTarget mvarId target r
 
 private def simpMatchCore (matchDeclName : Name) (matchEqDeclName : Name) (e : Expr) : MetaM Simp.Result := do
-  (·.1) <$> Simp.main e (← getSimpMatchContext) (methods := { pre, discharge? := SplitIf.discharge? })
+  let discharge? ← SplitIf.mkDischarge?
+  (·.1) <$> Simp.main e (← getSimpMatchContext) (methods := { pre, discharge? })
 where
   pre (e : Expr) : SimpM Simp.Step := do
     if e.isAppOf matchDeclName then
@@ -116,7 +120,7 @@ private partial def generalizeMatchDiscrs (mvarId : MVarId) (matcherDeclName : N
       let foundRef ← IO.mkRef false
       let rec mkNewTarget (e : Expr) : MetaM Expr := do
         let pre (e : Expr) : MetaM TransformStep := do
-          if !e.isAppOf matcherDeclName || e.getAppNumArgs != matcherInfo.arity then
+          if !e.isAppOfArity matcherDeclName matcherInfo.arity then
             return .continue
           let some matcherApp ← matchMatcherApp? e | return .continue
           for matcherDiscr in matcherApp.discrs, discr in discrs do

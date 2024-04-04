@@ -3,6 +3,7 @@ Copyright (c) 2020 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Sebastian Ullrich
 -/
+prelude
 import Lean.Elab.Term
 import Lean.PrettyPrinter.Delaborator.Options
 import Lean.PrettyPrinter.Delaborator.SubExpr
@@ -177,35 +178,6 @@ def annotatePos (pos : Pos) (stx : Term) : Term :=
 def annotateCurPos (stx : Term) : Delab :=
   return annotatePos (← getPos) stx
 
-def getUnusedName (suggestion : Name) (body : Expr) : DelabM Name := do
-  -- Use a nicer binder name than `[anonymous]`. We probably shouldn't do this in all LocalContext use cases, so do it here.
-  let suggestion := if suggestion.isAnonymous then `a else suggestion
-  -- We use this small hack to convert identifiers created using `mkAuxFunDiscr` to simple names
-  let suggestion := suggestion.eraseMacroScopes
-  let lctx ← getLCtx
-  if !lctx.usesUserName suggestion then
-    return suggestion
-  else if (← getPPOption getPPSafeShadowing) && !bodyUsesSuggestion lctx suggestion then
-    return suggestion
-  else
-    return lctx.getUnusedName suggestion
-where
-  bodyUsesSuggestion (lctx : LocalContext) (suggestion' : Name) : Bool :=
-    Option.isSome <| body.find? fun
-      | Expr.fvar fvarId =>
-        match lctx.find? fvarId with
-        | none      => false
-        | some decl => decl.userName == suggestion'
-      | _ => false
-
-def withBindingBodyUnusedName {α} (d : Syntax → DelabM α) : DelabM α := do
-  let n ← getUnusedName (← getExpr).bindingName! (← getExpr).bindingBody!
-  let stxN ← annotateCurPos (mkIdent n)
-  withBindingBody n $ d stxN
-
-@[inline] def liftMetaM {α} (x : MetaM α) : DelabM α :=
-  liftM x
-
 def addTermInfo (pos : Pos) (stx : Syntax) (e : Expr) (isBinder : Bool := false) : DelabM Unit := do
   let info := Info.ofTermInfo <| ← mkTermInfo stx e isBinder
   modify fun s => { s with infos := s.infos.insert pos info }
@@ -231,12 +203,77 @@ where
     stx := stx
   }
 
-def addOmissionInfo (pos : Pos) (stx : Syntax) (e : Expr) : DelabM Unit := do
+/--
+Annotates the term with the current expression position and registers `TermInfo`
+to associate the term to the current expression.
+-/
+def annotateTermInfo (stx : Term) : Delab := do
+  let stx ← annotateCurPos stx
+  addTermInfo (← getPos) stx (← getExpr)
+  pure stx
+
+/--
+Modifies the delaborator so that it annotates the resulting term with the current expression
+position and registers `TermInfo` to associate the term to the current expression.
+-/
+def withAnnotateTermInfo (d : Delab) : Delab := do
+  let stx ← d
+  annotateTermInfo stx
+
+def getUnusedName (suggestion : Name) (body : Expr) : DelabM Name := do
+  -- Use a nicer binder name than `[anonymous]`. We probably shouldn't do this in all LocalContext use cases, so do it here.
+  let suggestion := if suggestion.isAnonymous then `a else suggestion
+  -- We use this small hack to convert identifiers created using `mkAuxFunDiscr` to simple names
+  let suggestion := suggestion.eraseMacroScopes
+  let lctx ← getLCtx
+  if !lctx.usesUserName suggestion then
+    return suggestion
+  else if (← getPPOption getPPSafeShadowing) && !bodyUsesSuggestion lctx suggestion then
+    return suggestion
+  else
+    return lctx.getUnusedName suggestion
+where
+  bodyUsesSuggestion (lctx : LocalContext) (suggestion' : Name) : Bool :=
+    Option.isSome <| body.find? fun
+      | Expr.fvar fvarId =>
+        match lctx.find? fvarId with
+        | none      => false
+        | some decl => decl.userName == suggestion'
+      | _ => false
+
+/--
+Creates an identifier that is annotated with the term `e`, using a fresh position using the `HoleIterator`.
+-/
+def mkAnnotatedIdent (n : Name) (e : Expr) : DelabM Ident := do
+  let pos ← nextExtraPos
+  let stx : Syntax := annotatePos pos (mkIdent n)
+  addTermInfo pos stx e
+  return ⟨stx⟩
+
+/--
+Enters the body of the current expression, which must be a lambda or forall.
+The binding variable is passed to `d` as `Syntax`, and it is an identifier that has been annotated with the fvar expression
+for the variable.
+-/
+def withBindingBodyUnusedName {α} (d : Syntax → DelabM α) : DelabM α := do
+  let n ← getUnusedName (← getExpr).bindingName! (← getExpr).bindingBody!
+  withBindingBody' n (mkAnnotatedIdent n) (d ·)
+
+inductive OmissionReason
+  | deep
+  | proof
+
+def OmissionReason.toString : OmissionReason → String
+  | deep => "Term omitted due to its depth (see option `pp.deepTerms`)."
+  | proof => "Proof omitted (see option `pp.proofs`)."
+
+def addOmissionInfo (pos : Pos) (stx : Syntax) (e : Expr) (reason : OmissionReason) : DelabM Unit := do
   let info := Info.ofOmissionInfo <| ← mkOmissionInfo stx e
   modify fun s => { s with infos := s.infos.insert pos info }
 where
   mkOmissionInfo stx e := return {
     toTermInfo := ← addTermInfo.mkTermInfo stx e (isBinder := false)
+    reason := reason.toString
   }
 
 /--
@@ -248,6 +285,19 @@ def withIncDepth (act : DelabM α) : DelabM α := fun ctx =>
   act { ctx with depth := ctx.depth + 1 }
 
 /--
+Returns true if `e` is a "shallow" expression.
+Local variables, constants, and other atomic expressions are always shallow.
+In general, an expression is considered to be shallow if its depth is at most `threshold`.
+
+Since the implementation uses `Lean.Expr.approxDepth`, the `threshold` is clamped to `[0, 254]`.
+-/
+def isShallowExpression (threshold : Nat) (e : Expr) : Bool :=
+  -- Approximate depth is saturated at 255 for very deep expressions.
+  -- Need to clamp to `[0, 254]` so that not every expression is shallow.
+  let threshold := min 254 threshold
+  e.approxDepth.toNat ≤ threshold
+
+/--
 Returns `true` if, at the current depth, we should omit the term and use `⋯` rather than
 delaborating it. This function can only return `true` if `pp.deepTerms` is set to `false`.
 It also contains a heuristic to allow "shallow terms" to be delaborated, even if they appear deep in
@@ -255,34 +305,51 @@ an expression, which prevents terms such as atomic expressions or `OfNat.ofNat` 
 delaborated as `⋯`.
 -/
 def shouldOmitExpr (e : Expr) : DelabM Bool := do
-  if ← getPPOption getPPDeepTerms then
+  -- Atomic expressions never get omitted, so we can do an early return here.
+  if e.isAtomic then
+    return false
+
+  if (← getPPOption getPPDeepTerms) then
     return false
 
   let depth := (← read).depth
   let depthThreshold ← getPPOption getPPDeepTermsThreshold
-  let approxDepth := e.approxDepth.toNat
   let depthExcess := depth - depthThreshold
+  -- This threshold for shallow expressions effectively allows full terms to be pretty printed 25% deeper,
+  -- so long as the subterm actually can be fully pretty printed within this extra 25% depth.
+  let threshold := depthThreshold/4 - depthExcess
 
-  let isMaxedOutApproxDepth := approxDepth >= 255
-  let isShallowExpression :=
-    !isMaxedOutApproxDepth && approxDepth <= depthThreshold/4 - depthExcess
+  return depthExcess > 0 && !isShallowExpression threshold e
 
-  return depthExcess > 0 && !isShallowExpression
+/--
+Returns `true` if the given expression is a proof and should be omitted.
+This function only returns `true` if `pp.proofs` is set to `false`.
 
-def annotateTermInfo (stx : Term) : Delab := do
-  let stx ← annotateCurPos stx
-  addTermInfo (← getPos) stx (← getExpr)
-  pure stx
+"Shallow" proofs are not omitted.
+The `pp.proofs.threshold` option controls the depth threshold for what constitutes a shallow proof.
+See `Lean.PrettyPrinter.Delaborator.isShallowExpression`.
+-/
+def shouldOmitProof (e : Expr) : DelabM Bool := do
+  -- Atomic expressions never get omitted, so we can do an early return here.
+  if e.isAtomic then
+    return false
 
+  if (← getPPOption getPPProofs) then
+    return false
+
+  unless (← try Meta.isProof e catch _ => pure false) do
+    return false
+
+  return !isShallowExpression (← getPPOption getPPProofsThreshold) e
 
 /--
 Delaborates the current expression as `⋯` and attaches `Elab.OmissionInfo`, which influences how the
 subterm omitted by `⋯` is delaborated when hovered over.
 -/
-def omission : Delab := do
+def omission (reason : OmissionReason) : Delab := do
   let stx ← `(⋯)
   let stx ← annotateCurPos stx
-  addOmissionInfo (← getPos) stx (← getExpr)
+  addOmissionInfo (← getPos) stx (← getExpr) reason
   pure stx
 
 partial def delabFor : Name → Delab
@@ -297,15 +364,16 @@ partial def delab : Delab := do
   let e ← getExpr
 
   if ← shouldOmitExpr e then
-    return ← omission
+    return ← omission .deep
 
-  -- no need to hide atomic proofs
-  if ← pure !e.isAtomic <&&> pure !(← getPPOption getPPProofs) <&&> (try Meta.isProof e catch _ => pure false) then
+  if ← shouldOmitProof e then
+    let pf ← omission .proof
     if ← getPPOption getPPProofsWithType then
       let stx ← withType delab
-      return ← annotateTermInfo (← `((_ : $stx)))
+      return ← annotateCurPos (← `(($pf : $stx)))
     else
-      return ← annotateTermInfo (← ``(_))
+      return pf
+
   let k ← getExprKind
   let stx ← withIncDepth <| delabFor k <|> (liftM $ show MetaM _ from throwError "don't know how to delaborate '{k}'")
   if ← getPPOption getPPAnalyzeTypeAscriptions <&&> getPPOption getPPAnalysisNeedsType <&&> pure !e.isMData then
@@ -324,16 +392,17 @@ passed the result of pre-pretty printing the application *without* implicitly pa
 to true or `pp.notation` is set to false, it will not be called at all.",
     valueTypeName := `Lean.PrettyPrinter.Unexpander
     evalKey := fun _ stx => do
-      Elab.resolveGlobalConstNoOverloadWithInfo (← Attribute.Builtin.getIdent stx)
+      Elab.realizeGlobalConstNoOverloadWithInfo (← Attribute.Builtin.getIdent stx)
   } `Lean.PrettyPrinter.Delaborator.appUnexpanderAttribute
 @[builtin_init mkAppUnexpanderAttribute] opaque appUnexpanderAttribute : KeyedDeclsAttribute Unexpander
 
 end Delaborator
 
 open SubExpr (Pos PosMap)
-open Delaborator (OptionsPerPos topDownAnalyze)
+open Delaborator (OptionsPerPos topDownAnalyze DelabM)
 
-def delabCore (e : Expr) (optionsPerPos : OptionsPerPos := {}) (delab := Delaborator.delab) : MetaM (Term × PosMap Elab.Info) := do
+def delabCore (e : Expr) (optionsPerPos : OptionsPerPos := {}) (delab : DelabM α) :
+  MetaM (α × PosMap Elab.Info) := do
   /- Using `erasePatternAnnotations` here is a bit hackish, but we do it
      `Expr.mdata` affects the delaborator. TODO: should we fix that? -/
   let e ← Meta.erasePatternRefAnnotations e
@@ -365,7 +434,7 @@ def delabCore (e : Expr) (optionsPerPos : OptionsPerPos := {}) (delab := Delabor
 
 /-- "Delaborate" the given term into surface-level syntax using the default and given subterm-specific options. -/
 def delab (e : Expr) (optionsPerPos : OptionsPerPos := {}) : MetaM Term := do
-  let (stx, _) ← delabCore e optionsPerPos
+  let (stx, _) ← delabCore e optionsPerPos Delaborator.delab
   return stx
 
 builtin_initialize registerTraceClass `PrettyPrinter.delab

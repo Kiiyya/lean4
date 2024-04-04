@@ -4,6 +4,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Gabriel Ebner, Sebastian Ullrich, Mac Malone
 -/
 import Lake.Config.Opaque
+import Lake.Config.Defaults
 import Lake.Config.LeanLibConfig
 import Lake.Config.LeanExeConfig
 import Lake.Config.ExternLibConfig
@@ -26,24 +27,10 @@ Currently used for package and target names taken from the CLI.
 def stringToLegalOrSimpleName (s : String) : Name :=
   if s.toName.isAnonymous then Lean.Name.mkSimple s else s.toName
 
---------------------------------------------------------------------------------
-/-! # Defaults -/
---------------------------------------------------------------------------------
 
-/-- The default setting for a `PackageConfig`'s `buildDir` option. -/
-def defaultBuildDir : FilePath := "build"
-
-/-- The default setting for a `PackageConfig`'s `leanLibDir` option. -/
-def defaultLeanLibDir : FilePath := "lib"
-
-/-- The default setting for a `PackageConfig`'s `nativeLibDir` option. -/
-def defaultNativeLibDir : FilePath := "lib"
-
-/-- The default setting for a `PackageConfig`'s `binDir` option. -/
-def defaultBinDir : FilePath := "bin"
-
-/-- The default setting for a `PackageConfig`'s `irDir` option. -/
-def defaultIrDir : FilePath := "ir"
+/-- The default `buildArchive` configuration for a package with `name`. -/
+@[inline] def defaultBuildArchive (name : Name) : String :=
+  s!"{name.toString false}-{System.Platform.target}.tar.gz"
 
 --------------------------------------------------------------------------------
 /-! # PackageConfig -/
@@ -102,9 +89,9 @@ structure PackageConfig extends WorkspaceConfig, LeanConfig where
 
   /--
   The directory to which Lake should output the package's build results.
-  Defaults to `defaultLakeDir / defaultBuildDir` (i.e., `.lake/build`).
+  Defaults to `defaultBuildDir` (i.e., `.lake/build`).
   -/
-  buildDir : FilePath := defaultLakeDir / defaultBuildDir
+  buildDir : FilePath := defaultBuildDir
 
   /--
   The build subdirectory to which Lake should output the package's
@@ -159,8 +146,7 @@ structure PackageConfig extends WorkspaceConfig, LeanConfig where
   Defaults to `{(pkg-)name}-{System.Platform.target}.tar.gz`.
   -/
   buildArchive : String :=
-    if let some name := buildArchive? then name else
-    s!"{name.toString false}-{System.Platform.target}.tar.gz"
+    if let some name := buildArchive? then name else defaultBuildArchive name
 
   /--
   Whether to prefer downloading a prebuilt release (from GitHub) rather than
@@ -185,18 +171,16 @@ structure Package where
   relDir : FilePath
   /-- The package's user-defined configuration. -/
   config : PackageConfig
-  /-- The elaboration environment of the package's configuration file. -/
-  configEnv : Environment
-  /-- The Lean `Options` the package configuration was elaborated with. -/
-  leanOpts : Options
-  /-- The path to the package's configuration file. -/
-  configFile : FilePath
+  /-- The path to the package's configuration file (relative to `dir`). -/
+  relConfigFile : FilePath
   /-- The path to the package's JSON manifest of remote dependencies (relative to `dir`). -/
   relManifestFile : FilePath := config.manifestFile.getD defaultManifestFile
   /-- The URL to this package's Git remote. -/
   remoteUrl? : Option String := none
   /-- (Opaque references to) the package's direct dependencies. -/
   opaqueDeps : Array OpaquePackage := #[]
+  /-- Dependency configurations for the package. -/
+  depConfigs : Array Dependency := #[]
   /-- Lean library configurations for the package. -/
   leanLibConfigs : OrdNameMap LeanLibConfig := {}
   /-- Lean binary executable configurations for the package. -/
@@ -219,6 +203,8 @@ structure Package where
   defaultScripts : Array Script := #[]
   /-- Post-`lake update` hooks for the package. -/
   postUpdateHooks : Array (OpaquePostUpdateHook config.name) := #[]
+  /-- Name of the package's test runner script or executable (if any). -/
+  testRunner : Name := .anonymous
 
 instance : Nonempty Package :=
   have : Inhabited Environment := Classical.inhabited_of_nonempty inferInstance
@@ -288,6 +274,10 @@ namespace Package
 /-- The package's `dir` joined with its `relPkgsDir`. -/
 @[inline] def pkgsDir (self : Package) : FilePath :=
   self.dir / self.relPkgsDir
+
+/-- The full path to the package's configuration file. -/
+@[inline] def configFile (self : Package) : FilePath :=
+  self.dir / self.relConfigFile
 
 /-- The path to the package's JSON manifest of remote dependencies. -/
 @[inline] def manifestFile (self : Package) : FilePath :=

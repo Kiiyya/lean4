@@ -3,6 +3,7 @@ Copyright (c) 2020 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+prelude
 import Lean.Message
 import Lean.InternalExceptionId
 import Lean.Data.Options
@@ -68,7 +69,7 @@ protected def throwError [Monad m] [MonadError m] (msg : MessageData) : m α := 
   let (ref, msg) ← AddErrorMessageContext.add ref msg
   throw <| Exception.error ref msg
 
-/-- Thrown an unknown constant error message. -/
+/-- Throw an unknown constant error message. -/
 def throwUnknownConstant [Monad m] [MonadError m] (constName : Name) : m α :=
   Lean.throwError m!"unknown constant '{mkConst constName}'"
 

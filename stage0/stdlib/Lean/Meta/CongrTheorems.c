@@ -1,6 +1,6 @@
 // Lean compiler output
 // Module: Lean.Meta.CongrTheorems
-// Imports: Init Lean.Meta.AppBuilder Lean.Class
+// Imports: Lean.Meta.AppBuilder Lean.Class
 #include <lean/lean.h>
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wunused-parameter"
@@ -23,7 +23,6 @@ LEAN_EXPORT lean_object* l_Lean_Meta_mkHCongrWithArity_withNewEqs(lean_object*);
 LEAN_EXPORT lean_object* l_Lean_throwError___at_Lean_Meta_mkHCongrWithArity___spec__1___boxed(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
 static lean_object* l___private_Lean_Meta_CongrTheorems_0__Lean_Meta_reprCongrArgKind____x40_Lean_Meta_CongrTheorems___hyg_15____closed__38;
 LEAN_EXPORT uint8_t l_Lean_PersistentArray_anyM___at___private_Lean_Meta_CongrTheorems_0__Lean_Meta_mkCast_go___spec__5(lean_object*, lean_object*);
-lean_object* l___private_Init_Util_0__outOfBounds___rarg(lean_object*);
 LEAN_EXPORT lean_object* l___private_Lean_MetavarContext_0__Lean_DependsOn_dep_visitApp___at___private_Lean_Meta_CongrTheorems_0__Lean_Meta_mkCast_go___spec__12___boxed(lean_object*, lean_object*, lean_object*);
 LEAN_EXPORT lean_object* l_Array_anyMUnsafe_any___at___private_Lean_Meta_CongrTheorems_0__Lean_Meta_mkCast_go___spec__15___boxed(lean_object*, lean_object*, lean_object*, lean_object*);
 LEAN_EXPORT lean_object* l_Array_mapMUnsafe_map___at_Lean_Meta_mkCongrSimpCore_x3f___spec__1(size_t, size_t, lean_object*);
@@ -69,6 +68,7 @@ static lean_object* l___private_Lean_Meta_CongrTheorems_0__Lean_Meta_reprCongrAr
 static lean_object* l_Lean_Meta_mkHCongrWithArity_mkProof___closed__3;
 static lean_object* l___private_Lean_Meta_CongrTheorems_0__Lean_Meta_reprCongrArgKind____x40_Lean_Meta_CongrTheorems___hyg_15____closed__20;
 uint8_t lean_usize_dec_eq(size_t, size_t);
+lean_object* l___private_Init_GetElem_0__outOfBounds___rarg(lean_object*);
 LEAN_EXPORT lean_object* l_Lean_Meta_mkCongrSimpCore_x3f_mkProof_go___lambda__1(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
 LEAN_EXPORT uint8_t l_Array_anyMUnsafe_any___at___private_Lean_Meta_CongrTheorems_0__Lean_Meta_mkCast_go___spec__9(lean_object*, lean_object*, size_t, size_t);
 lean_object* l_Lean_Meta_FunInfo_getArity(lean_object*);
@@ -1228,7 +1228,7 @@ x_64 = lean_ctor_get(x_62, 1);
 lean_inc(x_64);
 lean_dec(x_62);
 x_65 = l_Lean_instInhabitedExpr;
-x_66 = l___private_Init_Util_0__outOfBounds___rarg(x_65);
+x_66 = l___private_Init_GetElem_0__outOfBounds___rarg(x_65);
 x_16 = x_66;
 x_17 = x_63;
 x_18 = x_64;
@@ -1900,7 +1900,7 @@ if (x_12 == 0)
 {
 lean_object* x_17; lean_object* x_18; lean_object* x_19; uint8_t x_20; uint8_t x_21; lean_object* x_22; 
 x_17 = l_Lean_instInhabitedExpr;
-x_18 = l___private_Init_Util_0__outOfBounds___rarg(x_17);
+x_18 = l___private_Init_GetElem_0__outOfBounds___rarg(x_17);
 x_19 = lean_alloc_closure((void*)(l_Lean_Meta_mkHCongrWithArity_mkProof___lambda__2), 10, 4);
 lean_closure_set(x_19, 0, x_14);
 lean_closure_set(x_19, 1, x_4);
@@ -1939,7 +1939,7 @@ if (x_11 == 0)
 {
 lean_object* x_12; lean_object* x_13; lean_object* x_14; lean_object* x_15; 
 x_12 = l_Lean_instInhabitedExpr;
-x_13 = l___private_Init_Util_0__outOfBounds___rarg(x_12);
+x_13 = l___private_Init_GetElem_0__outOfBounds___rarg(x_12);
 lean_inc(x_3);
 x_14 = lean_alloc_closure((void*)(l_Lean_Meta_mkHCongrWithArity_mkProof___lambda__3___boxed), 9, 2);
 lean_closure_set(x_14, 0, x_3);
@@ -2032,9 +2032,7 @@ else
 {
 lean_object* x_16; lean_object* x_17; lean_object* x_18; lean_object* x_19; 
 x_16 = l_Lean_Expr_appFn_x21(x_1);
-lean_dec(x_1);
 x_17 = l_Lean_Expr_appFn_x21(x_16);
-lean_dec(x_16);
 x_18 = l_Lean_Expr_appArg_x21(x_17);
 lean_dec(x_17);
 x_19 = l_Lean_Meta_mkHEqRefl(x_18, x_2, x_3, x_4, x_5, x_6);
@@ -2045,7 +2043,6 @@ else
 {
 lean_object* x_20; lean_object* x_21; lean_object* x_22; 
 x_20 = l_Lean_Expr_appFn_x21(x_1);
-lean_dec(x_1);
 x_21 = l_Lean_Expr_appArg_x21(x_20);
 lean_dec(x_20);
 x_22 = l_Lean_Meta_mkEqRefl(x_21, x_2, x_3, x_4, x_5, x_6);
@@ -3032,7 +3029,7 @@ if (x_58 == 0)
 {
 lean_object* x_59; lean_object* x_60; lean_object* x_61; uint8_t x_62; 
 x_59 = l_Lean_Meta_instInhabitedParamInfo;
-x_60 = l___private_Init_Util_0__outOfBounds___rarg(x_59);
+x_60 = l___private_Init_GetElem_0__outOfBounds___rarg(x_59);
 x_61 = lean_ctor_get(x_60, 0);
 lean_inc(x_61);
 lean_dec(x_60);
@@ -3117,7 +3114,7 @@ if (x_22 == 0)
 uint8_t x_23; lean_object* x_24; lean_object* x_25; uint8_t x_26; lean_object* x_27; lean_object* x_35; 
 x_23 = l_Lean_Meta_instInhabitedCongrArgKind;
 x_24 = lean_box(x_23);
-x_25 = l___private_Init_Util_0__outOfBounds___rarg(x_24);
+x_25 = l___private_Init_GetElem_0__outOfBounds___rarg(x_24);
 x_26 = lean_unbox(x_25);
 lean_dec(x_25);
 x_35 = lean_box(x_26);
@@ -5014,7 +5011,7 @@ _start:
 lean_object* x_1; lean_object* x_2; lean_object* x_3; lean_object* x_4; lean_object* x_5; lean_object* x_6; 
 x_1 = l___private_Lean_Meta_CongrTheorems_0__Lean_Meta_mkCast_go___closed__1;
 x_2 = l___private_Lean_Meta_CongrTheorems_0__Lean_Meta_mkCast_go___closed__2;
-x_3 = lean_unsigned_to_nat(142u);
+x_3 = lean_unsigned_to_nat(143u);
 x_4 = lean_unsigned_to_nat(61u);
 x_5 = l___private_Lean_Meta_CongrTheorems_0__Lean_Meta_mkCast_go___closed__3;
 x_6 = l___private_Init_Util_0__mkPanicMessageWithDecl(x_1, x_2, x_3, x_4, x_5);
@@ -5063,7 +5060,7 @@ if (x_95 == 0)
 {
 lean_object* x_96; 
 lean_dec(x_93);
-x_96 = l___private_Init_Util_0__outOfBounds___rarg(x_92);
+x_96 = l___private_Init_GetElem_0__outOfBounds___rarg(x_92);
 if (lean_obj_tag(x_96) == 0)
 {
 lean_object* x_97; lean_object* x_98; 
@@ -5143,6 +5140,7 @@ return x_19;
 else
 {
 lean_object* x_20; lean_object* x_21; lean_object* x_22; lean_object* x_23; lean_object* x_24; lean_object* x_25; uint8_t x_26; 
+lean_inc(x_13);
 x_20 = l_Lean_Expr_appFn_x21(x_13);
 x_21 = l_Lean_Expr_appArg_x21(x_20);
 lean_dec(x_20);
@@ -5801,7 +5799,7 @@ if (x_11 == 0)
 {
 lean_object* x_12; lean_object* x_13; lean_object* x_14; 
 x_12 = l_Lean_instInhabitedExpr;
-x_13 = l___private_Init_Util_0__outOfBounds___rarg(x_12);
+x_13 = l___private_Init_GetElem_0__outOfBounds___rarg(x_12);
 x_14 = lean_apply_7(x_1, x_13, x_3, x_4, x_5, x_6, x_7, x_8);
 return x_14;
 }
@@ -5888,7 +5886,7 @@ uint8_t x_16; lean_object* x_17; lean_object* x_18; uint8_t x_19; lean_object* x
 lean_dec(x_13);
 x_16 = l_Lean_Meta_instInhabitedCongrArgKind;
 x_17 = lean_box(x_16);
-x_18 = l___private_Init_Util_0__outOfBounds___rarg(x_17);
+x_18 = l___private_Init_GetElem_0__outOfBounds___rarg(x_17);
 x_19 = lean_unbox(x_18);
 lean_dec(x_18);
 x_20 = lean_box(x_19);
@@ -5988,7 +5986,7 @@ if (x_19 == 0)
 {
 lean_object* x_20; lean_object* x_21; 
 x_20 = l_Lean_Meta_instInhabitedParamInfo;
-x_21 = l___private_Init_Util_0__outOfBounds___rarg(x_20);
+x_21 = l___private_Init_GetElem_0__outOfBounds___rarg(x_20);
 x_4 = x_21;
 goto block_16;
 }
@@ -6109,7 +6107,7 @@ if (x_28 == 0)
 {
 lean_object* x_29; lean_object* x_30; lean_object* x_31; lean_object* x_32; 
 x_29 = l_Lean_instInhabitedExpr;
-x_30 = l___private_Init_Util_0__outOfBounds___rarg(x_29);
+x_30 = l___private_Init_GetElem_0__outOfBounds___rarg(x_29);
 x_31 = l_Lean_Expr_fvarId_x21(x_30);
 lean_inc(x_10);
 x_32 = l_Lean_FVarId_getDecl(x_31, x_10, x_11, x_12, x_13, x_14);
@@ -6671,7 +6669,7 @@ if (x_51 == 0)
 {
 lean_object* x_52; lean_object* x_53; uint8_t x_54; 
 x_52 = l_Lean_Meta_instInhabitedParamInfo;
-x_53 = l___private_Init_Util_0__outOfBounds___rarg(x_52);
+x_53 = l___private_Init_GetElem_0__outOfBounds___rarg(x_52);
 x_54 = lean_ctor_get_uint8(x_53, sizeof(void*)*1 + 2);
 if (x_54 == 0)
 {
@@ -7398,7 +7396,7 @@ _start:
 lean_object* x_1; lean_object* x_2; lean_object* x_3; lean_object* x_4; lean_object* x_5; lean_object* x_6; 
 x_1 = l___private_Lean_Meta_CongrTheorems_0__Lean_Meta_mkCast_go___closed__1;
 x_2 = l_Lean_Meta_mkCongrSimpCore_x3f_mkProof_go___lambda__4___closed__1;
-x_3 = lean_unsigned_to_nat(299u);
+x_3 = lean_unsigned_to_nat(300u);
 x_4 = lean_unsigned_to_nat(34u);
 x_5 = l___private_Lean_Meta_CongrTheorems_0__Lean_Meta_mkCast_go___closed__3;
 x_6 = l___private_Init_Util_0__mkPanicMessageWithDecl(x_1, x_2, x_3, x_4, x_5);
@@ -7415,7 +7413,7 @@ if (x_36 == 0)
 uint8_t x_37; lean_object* x_38; lean_object* x_39; uint8_t x_40; lean_object* x_41; 
 x_37 = l_Lean_Meta_instInhabitedCongrArgKind;
 x_38 = lean_box(x_37);
-x_39 = l___private_Init_Util_0__outOfBounds___rarg(x_38);
+x_39 = l___private_Init_GetElem_0__outOfBounds___rarg(x_38);
 x_40 = lean_unbox(x_39);
 lean_dec(x_39);
 x_41 = lean_box(x_40);
@@ -7720,7 +7718,7 @@ _start:
 lean_object* x_1; lean_object* x_2; lean_object* x_3; lean_object* x_4; lean_object* x_5; lean_object* x_6; 
 x_1 = l___private_Lean_Meta_CongrTheorems_0__Lean_Meta_mkCast_go___closed__1;
 x_2 = l_Lean_Meta_mkCongrSimpCore_x3f_mkProof_go___lambda__4___closed__1;
-x_3 = lean_unsigned_to_nat(294u);
+x_3 = lean_unsigned_to_nat(295u);
 x_4 = lean_unsigned_to_nat(43u);
 x_5 = l___private_Lean_Meta_CongrTheorems_0__Lean_Meta_mkCast_go___closed__3;
 x_6 = l___private_Init_Util_0__mkPanicMessageWithDecl(x_1, x_2, x_3, x_4, x_5);
@@ -7764,7 +7762,6 @@ else
 {
 lean_object* x_18; lean_object* x_19; lean_object* x_20; 
 x_18 = l_Lean_Expr_appFn_x21(x_3);
-lean_dec(x_3);
 x_19 = l_Lean_Expr_appArg_x21(x_18);
 lean_dec(x_18);
 x_20 = l_Lean_Meta_mkEqRefl(x_19, x_4, x_5, x_6, x_7, x_8);
@@ -8153,7 +8150,7 @@ _start:
 lean_object* x_1; lean_object* x_2; lean_object* x_3; lean_object* x_4; lean_object* x_5; lean_object* x_6; 
 x_1 = l___private_Lean_Meta_CongrTheorems_0__Lean_Meta_mkCast_go___closed__1;
 x_2 = l_Lean_Meta_mkCongrSimpCore_x3f_mk_x3f_go___closed__1;
-x_3 = lean_unsigned_to_nat(269u);
+x_3 = lean_unsigned_to_nat(270u);
 x_4 = lean_unsigned_to_nat(38u);
 x_5 = l___private_Lean_Meta_CongrTheorems_0__Lean_Meta_mkCast_go___closed__3;
 x_6 = l___private_Init_Util_0__mkPanicMessageWithDecl(x_1, x_2, x_3, x_4, x_5);
@@ -8178,7 +8175,7 @@ if (x_18 == 0)
 {
 lean_object* x_129; lean_object* x_130; 
 x_129 = l_Lean_instInhabitedExpr;
-x_130 = l___private_Init_Util_0__outOfBounds___rarg(x_129);
+x_130 = l___private_Init_GetElem_0__outOfBounds___rarg(x_129);
 x_20 = x_130;
 goto block_128;
 }
@@ -8199,7 +8196,7 @@ if (x_19 == 0)
 uint8_t x_98; lean_object* x_99; lean_object* x_100; uint8_t x_101; lean_object* x_102; 
 x_98 = l_Lean_Meta_instInhabitedCongrArgKind;
 x_99 = lean_box(x_98);
-x_100 = l___private_Init_Util_0__outOfBounds___rarg(x_99);
+x_100 = l___private_Init_GetElem_0__outOfBounds___rarg(x_99);
 x_101 = lean_unbox(x_100);
 lean_dec(x_100);
 x_102 = lean_box(x_101);
@@ -8432,7 +8429,7 @@ if (x_50 == 0)
 lean_object* x_51; lean_object* x_52; lean_object* x_53; lean_object* x_54; 
 lean_dec(x_48);
 x_51 = l_Lean_Meta_instInhabitedParamInfo;
-x_52 = l___private_Init_Util_0__outOfBounds___rarg(x_51);
+x_52 = l___private_Init_GetElem_0__outOfBounds___rarg(x_51);
 x_53 = lean_ctor_get(x_52, 0);
 lean_inc(x_53);
 lean_dec(x_52);
@@ -9489,7 +9486,6 @@ x_9 = l_Lean_Meta_mkCongrSimp_x3f(x_1, x_8, x_3, x_4, x_5, x_6, x_7);
 return x_9;
 }
 }
-lean_object* initialize_Init(uint8_t builtin, lean_object*);
 lean_object* initialize_Lean_Meta_AppBuilder(uint8_t builtin, lean_object*);
 lean_object* initialize_Lean_Class(uint8_t builtin, lean_object*);
 static bool _G_initialized = false;
@@ -9497,9 +9493,6 @@ LEAN_EXPORT lean_object* initialize_Lean_Meta_CongrTheorems(uint8_t builtin, lea
 lean_object * res;
 if (_G_initialized) return lean_io_result_mk_ok(lean_box(0));
 _G_initialized = true;
-res = initialize_Init(builtin, lean_io_mk_world());
-if (lean_io_result_is_error(res)) return res;
-lean_dec_ref(res);
 res = initialize_Lean_Meta_AppBuilder(builtin, lean_io_mk_world());
 if (lean_io_result_is_error(res)) return res;
 lean_dec_ref(res);
