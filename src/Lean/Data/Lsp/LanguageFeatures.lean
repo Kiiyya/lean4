@@ -344,7 +344,7 @@ inductive SemanticTokenType where
   | constructor
   | recursor
   | quot
-  deriving ToJson, FromJson, Repr, BEq
+  deriving ToJson, FromJson, Repr, BEq, Hashable
 
 -- must be in the same order as the constructors
 def SemanticTokenType.names : Array String :=
@@ -360,8 +360,8 @@ def SemanticTokenType.names : Array String :=
     "quot"
     ]
 
-def SemanticTokenType.toNat (type : SemanticTokenType) : Nat :=
-  type.toCtorIdx
+def SemanticTokenType.toNat (tokenType : SemanticTokenType) : Nat :=
+  tokenType.toCtorIdx
 
 -- sanity check
 -- TODO: restore after update-stage0

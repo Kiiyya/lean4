@@ -20,6 +20,9 @@ open DSL System Lean Syntax Parser Module
 private local instance : Quote FilePath where
   quote path := quote path.toString
 
+private local instance [Quote α] : Quote (Array α) where
+  quote xs := let xs : Array Term := xs.map quote; Unhygienic.run `(#[$xs,*])
+
 private local instance : BEq FilePath where
   beq a b := a.normalize == b.normalize
 
@@ -67,6 +70,13 @@ def quoteLeanOption (opt : LeanOption) : Term := Unhygienic.run do
 
 private local instance : Quote LeanOption := ⟨quoteLeanOption⟩
 
+protected def LeanVer.quote (v : LeanVer) : Term := Unhygienic.run do
+  let lit := Syntax.mkLit interpolatedStrLitKind  v.toString.quote
+  let stx := mkNode interpolatedStrKind #[lit]
+  `(v!$stx)
+
+private local instance : Quote LeanVer := ⟨LeanVer.quote⟩
+
 /-! ## Configuration Encoders -/
 
 def WorkspaceConfig.addDeclFields (cfg : WorkspaceConfig) (fs : Array DeclField) : Array DeclField :=
@@ -89,8 +99,11 @@ def LeanConfig.addDeclFields (cfg : LeanConfig) (fs : Array DeclField) : Array D
 @[inline] def mkDeclValWhere? (fields : Array DeclField) : Option (TSyntax ``declValWhere) :=
   if fields.isEmpty then none else Unhygienic.run `(declValWhere|where $fields*)
 
-def PackageConfig.mkSyntax (cfg : PackageConfig) : PackageDecl := Unhygienic.run do
-  let declVal? := mkDeclValWhere? <|Array.empty
+def PackageConfig.mkSyntax (cfg : PackageConfig)
+  (testDriver := cfg.testDriver) (lintDriver := cfg.lintDriver)
+: PackageDecl := Unhygienic.run do
+  have : Quote Term := ⟨id⟩
+  let declVal? := mkDeclValWhere? <| Array.empty
     |> addDeclFieldD `precompileModules cfg.precompileModules false
     |> addDeclFieldD `moreGlobalServerArgs cfg.moreGlobalServerArgs #[]
     |> addDeclFieldD `srcDir cfg.srcDir "."
@@ -102,9 +115,30 @@ def PackageConfig.mkSyntax (cfg : PackageConfig) : PackageDecl := Unhygienic.run
     |> addDeclField? `releaseRepo (cfg.releaseRepo <|> cfg.releaseRepo?)
     |> addDeclFieldD `buildArchive (cfg.buildArchive?.getD cfg.buildArchive) (defaultBuildArchive cfg.name)
     |> addDeclFieldD `preferReleaseBuild cfg.preferReleaseBuild false
+    |> addDeclFieldD `testDriver testDriver ""
+    |> addDeclFieldD `testDriverArgs cfg.testDriverArgs #[]
+    |> addDeclFieldD `lintDriver lintDriver ""
+    |> addDeclFieldD `lintDriverArgs cfg.lintDriverArgs #[]
+    |> addDeclFieldD `version cfg.version v!"0.0.0"
+    |> addDeclField? `versionTags (quoteVerTags? cfg.versionTags)
+    |> addDeclFieldD `description cfg.description ""
+    |> addDeclFieldD `keywords cfg.keywords #[]
+    |> addDeclFieldD `homepage cfg.homepage ""
+    |> addDeclFieldD `license cfg.license ""
+    |> addDeclFieldD `licenseFiles cfg.licenseFiles #["LICENSE"]
+    |> addDeclFieldD `readmeFile cfg.readmeFile "README.md"
+    |> addDeclFieldD `reservoir cfg.reservoir true
     |> cfg.toWorkspaceConfig.addDeclFields
     |> cfg.toLeanConfig.addDeclFields
-  `(packageDecl|package $(mkIdent cfg.name) $[$declVal?]?)
+  `(packageDecl|package $(mkIdent cfg.name):ident $[$declVal?]?)
+  where
+    quoteVerTags? (pat : StrPat) : Option Term :=
+      match pat with
+      | .mem xs => if xs.isEmpty then Unhygienic.run `(∅) else some (quote xs)
+      | .startsWith pre => Unhygienic.run `(.$(mkIdent `startsWith) $(quote pre))
+      | .satisfies _ n =>
+        if n.isAnonymous || n == `default then none else
+        Unhygienic.run `(.$(mkIdent n))
 
 private def getEscapedNameParts? (acc : List String) : Name → Option (List String)
   | Name.anonymous => if acc.isEmpty then none else some acc
@@ -142,10 +176,10 @@ protected def LeanLibConfig.mkSyntax
     |> addDeclFieldD `defaultFacets cfg.defaultFacets #[LeanLib.leanArtsFacet]
     |> cfg.toLeanConfig.addDeclFields
   let attrs? ← if defaultTarget then some <$> `(Term.attributes|@[default_target]) else pure none
-  `(leanLibDecl|$[$attrs?:attributes]? lean_lib $(mkIdent cfg.name) $[$declVal?]?)
+  `(leanLibDecl|$[$attrs?:attributes]? lean_lib $(mkIdent cfg.name):ident $[$declVal?]?)
 
 protected def LeanExeConfig.mkSyntax
-  (cfg : LeanExeConfig) (defaultTarget := false) (testRunner := false)
+  (cfg : LeanExeConfig) (defaultTarget := false)
 : LeanExeDecl := Unhygienic.run do
   let declVal? := mkDeclValWhere? <| Array.empty
     |> addDeclFieldD `srcDir cfg.srcDir "."
@@ -153,36 +187,42 @@ protected def LeanExeConfig.mkSyntax
     |> addDeclFieldD `exeName cfg.exeName (cfg.name.toStringWithSep "-" (escape := false))
     |> addDeclFieldD `supportInterpreter cfg.supportInterpreter false
     |> cfg.toLeanConfig.addDeclFields
-  let attrs? ← id do
-    let mut attrs := #[]
-    if testRunner then attrs := attrs.push <| ← `(Term.attrInstance|test_runner)
-    if defaultTarget then attrs := attrs.push <| ← `(Term.attrInstance|default_target)
-    if attrs.isEmpty then pure none else some <$> `(Term.attributes|@[$attrs,*])
-  `(leanExeDecl|$[$attrs?:attributes]? lean_exe $(mkIdent cfg.name) $[$declVal?]?)
+    let attrs? ← if defaultTarget then some <$> `(Term.attributes|@[default_target]) else pure none
+  `(leanExeDecl|$[$attrs?:attributes]? lean_exe $(mkIdent cfg.name):ident $[$declVal?]?)
 
 protected def Dependency.mkSyntax (cfg : Dependency) : RequireDecl := Unhygienic.run do
+  let src? ← cfg.src?.mapM fun src =>
+    match src with
+    | .path dir =>
+      `(fromSource|$(quote dir):term)
+    | .git url rev? subDir? =>
+      `(fromSource|git $(quote url) $[@ $(rev?.map quote)]? $[/ $(subDir?.map quote)]?)
+  let ver? ←
+    if let some ver := cfg.version? then
+      if ver.startsWith "git#" then
+        some <$> `(verSpec|git $(quote <| ver.drop 4))
+      else
+        some <$> `(verSpec|$(quote ver):term)
+    else
+      pure none
+  let scope? := if cfg.scope.isEmpty then none else some (quote cfg.scope)
   let opts? := if cfg.opts.isEmpty then none else some <| Unhygienic.run do
     cfg.opts.foldM (init := mkCIdent ``NameMap.empty) fun stx opt val =>
       `($stx |>.insert $(quote opt) $(quote val))
-  match cfg.src with
-  | .path dir =>
-    `(requireDecl|require $(mkIdent cfg.name) from $(quote dir):term $[with $opts?]?)
-  | .git url rev? subDir? =>
-    `(requireDecl|require $(mkIdent cfg.name) from git $(quote url)
-      $[@ $(rev?.map quote)]? $[/ $(subDir?.map quote)]? $[with $opts?]?)
+  `(requireDecl|require $[$scope? /]? $(mkIdent cfg.name):ident $[@ $ver?]?
+    $[from $src?]? $[with $opts?]?)
 
 /-! ## Root Encoder -/
 
 /-- Create a Lean module that encodes the declarative configuration of the package. -/
 def Package.mkLeanConfig (pkg : Package) : TSyntax ``module := Unhygienic.run do
-  let testRunner := pkg.testRunner
   let defaultTargets := pkg.defaultTargets.foldl NameSet.insert NameSet.empty
-  let pkgConfig := pkg.config.mkSyntax
+  let pkgConfig := pkg.config.mkSyntax pkg.testDriver pkg.lintDriver
   let requires := pkg.depConfigs.map (·.mkSyntax)
   let leanLibs := pkg.leanLibConfigs.toArray.map fun cfg =>
     cfg.mkSyntax (defaultTargets.contains cfg.name)
   let leanExes := pkg.leanExeConfigs.toArray.map fun cfg =>
-    cfg.mkSyntax (defaultTargets.contains cfg.name) (cfg.name == testRunner)
+    cfg.mkSyntax (defaultTargets.contains cfg.name)
   `(module|
   import $(mkIdent `Lake)
   open $(mkIdent `System) $(mkIdent `Lake) $(mkIdent `DSL)

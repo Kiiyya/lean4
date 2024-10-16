@@ -33,10 +33,12 @@ LEAN_EXPORT lean_object* l___private_Init_Util_0__mkPanicMessage(lean_object*, l
 LEAN_EXPORT lean_object* l_panicWithPos___rarg(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
 LEAN_EXPORT lean_object* l_panicWithPos(lean_object*);
 size_t lean_ptr_addr(lean_object*);
+uint8_t lean_is_exclusive_obj(lean_object*);
 lean_object* l_panic___rarg(lean_object*, lean_object*);
 LEAN_EXPORT lean_object* l_withPtrEqUnsafe___rarg___boxed(lean_object*, lean_object*, lean_object*, lean_object*);
 LEAN_EXPORT lean_object* l_ptrEq(lean_object*);
 LEAN_EXPORT lean_object* l_Runtime_markMultiThreaded___boxed(lean_object*, lean_object*);
+LEAN_EXPORT lean_object* l_isExclusiveUnsafe___boxed(lean_object*, lean_object*);
 static lean_object* l___private_Init_Util_0__mkPanicMessageWithDecl___closed__1;
 LEAN_EXPORT lean_object* l_panicWithPosWithDecl___rarg___boxed(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
 LEAN_EXPORT lean_object* l_ptrEqList(lean_object*);
@@ -63,7 +65,7 @@ LEAN_EXPORT lean_object* l_ptrAddrUnsafe___boxed(lean_object*, lean_object*);
 LEAN_EXPORT lean_object* l_withPtrEqDecEq(lean_object*);
 LEAN_EXPORT lean_object* l_ptrEq___rarg___boxed(lean_object*, lean_object*);
 lean_object* lean_dbg_trace(lean_object*, lean_object*);
-lean_object* l_Nat_repr(lean_object*);
+lean_object* l___private_Init_Data_Repr_0__Nat_reprFast(lean_object*);
 LEAN_EXPORT lean_object* l_dbgTrace___boxed(lean_object* x_1, lean_object* x_2, lean_object* x_3) {
 _start:
 {
@@ -139,7 +141,7 @@ static lean_object* _init_l___private_Init_Util_0__mkPanicMessage___closed__1() 
 _start:
 {
 lean_object* x_1; 
-x_1 = lean_mk_string_from_bytes("PANIC at ", 9);
+x_1 = lean_mk_string_unchecked("PANIC at ", 9, 9);
 return x_1;
 }
 }
@@ -147,7 +149,7 @@ static lean_object* _init_l___private_Init_Util_0__mkPanicMessage___closed__2() 
 _start:
 {
 lean_object* x_1; 
-x_1 = lean_mk_string_from_bytes(":", 1);
+x_1 = lean_mk_string_unchecked(":", 1, 1);
 return x_1;
 }
 }
@@ -155,7 +157,7 @@ static lean_object* _init_l___private_Init_Util_0__mkPanicMessage___closed__3() 
 _start:
 {
 lean_object* x_1; 
-x_1 = lean_mk_string_from_bytes(": ", 2);
+x_1 = lean_mk_string_unchecked(": ", 2, 2);
 return x_1;
 }
 }
@@ -167,11 +169,11 @@ x_5 = l___private_Init_Util_0__mkPanicMessage___closed__1;
 x_6 = lean_string_append(x_5, x_1);
 x_7 = l___private_Init_Util_0__mkPanicMessage___closed__2;
 x_8 = lean_string_append(x_6, x_7);
-x_9 = l_Nat_repr(x_2);
+x_9 = l___private_Init_Data_Repr_0__Nat_reprFast(x_2);
 x_10 = lean_string_append(x_8, x_9);
 lean_dec(x_9);
 x_11 = lean_string_append(x_10, x_7);
-x_12 = l_Nat_repr(x_3);
+x_12 = l___private_Init_Data_Repr_0__Nat_reprFast(x_3);
 x_13 = lean_string_append(x_11, x_12);
 lean_dec(x_12);
 x_14 = l___private_Init_Util_0__mkPanicMessage___closed__3;
@@ -221,7 +223,7 @@ static lean_object* _init_l___private_Init_Util_0__mkPanicMessageWithDecl___clos
 _start:
 {
 lean_object* x_1; 
-x_1 = lean_mk_string_from_bytes(" ", 1);
+x_1 = lean_mk_string_unchecked(" ", 1, 1);
 return x_1;
 }
 }
@@ -236,11 +238,11 @@ x_9 = lean_string_append(x_7, x_8);
 x_10 = lean_string_append(x_9, x_1);
 x_11 = l___private_Init_Util_0__mkPanicMessage___closed__2;
 x_12 = lean_string_append(x_10, x_11);
-x_13 = l_Nat_repr(x_3);
+x_13 = l___private_Init_Data_Repr_0__Nat_reprFast(x_3);
 x_14 = lean_string_append(x_12, x_13);
 lean_dec(x_13);
 x_15 = lean_string_append(x_14, x_11);
-x_16 = l_Nat_repr(x_4);
+x_16 = l___private_Init_Data_Repr_0__Nat_reprFast(x_4);
 x_17 = lean_string_append(x_15, x_16);
 lean_dec(x_16);
 x_18 = l___private_Init_Util_0__mkPanicMessage___closed__3;
@@ -295,6 +297,16 @@ size_t x_3; lean_object* x_4;
 x_3 = lean_ptr_addr(x_2);
 lean_dec(x_2);
 x_4 = lean_box_usize(x_3);
+return x_4;
+}
+}
+LEAN_EXPORT lean_object* l_isExclusiveUnsafe___boxed(lean_object* x_1, lean_object* x_2) {
+_start:
+{
+uint8_t x_3; lean_object* x_4; 
+x_3 = lean_is_exclusive_obj(x_2);
+lean_dec(x_2);
+x_4 = lean_box(x_3);
 return x_4;
 }
 }

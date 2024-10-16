@@ -13,8 +13,10 @@ Each `lakefile.lean` includes a `package` declaration (akin to `main`) which def
 * [Creating and Building a Package](#creating-and-building-a-package)
 * [Glossary of Terms](#glossary-of-terms)
 * [Package Configuration Options](#package-configuration-options)
+  + [Metadata](#metadata)
   + [Layout](#layout)
   + [Build & Run](#build--run)
+  + [Test & Lint](#test--lint)
   + [Cloud Releases](#cloud-releases)
 * [Defining Build Targets](#defining-build-targets)
   + [Lean Libraries](#lean-libraries)
@@ -23,7 +25,9 @@ Each `lakefile.lean` includes a `package` declaration (akin to `main`) which def
   + [Custom Targets](#custom-targets)
 * [Defining New Facets](#defining-new-facets)
 * [Adding Dependencies](#adding-dependencies)
-  + [Syntax of `require`](#syntax-of-require)
+  + [Lean `require`](#lean-require)
+  + [Supported Sources](#supported-sources)
+  + [TOML `require`](#toml-require)
 * [GitHub Release Builds](#github-release-builds)
 * [Writing and Running Scripts](#writing-and-running-scripts)
 * [Building and Running Lake from the Source](#building-and-running-lake-from-the-source)
@@ -162,10 +166,28 @@ Lake uses a lot of terms common in software development -- like workspace, packa
 
 Lake provides a large assortment of configuration options for packages.
 
+### Metadata
+
+These options describe the package. They are used by Lake's package registry, [Reservoir](https://reservoir.lean-lang.org/), to index and display packages. If a field is left out, Reservoir may use information from the package's GitHub repository to fill in details.
+
+* `name`: The name of the package. Set by `package <name>` in Lean configuration files.
+* `version`: The version of the package. A 3-point version identifier with an optional `-` suffix.
+* `versionTags`: Git tags of this package's repository that should be treated as versions.  Reservoir makes use of this information to determine the Git revisions corresponding to released versions. Defaults to tags that are "version-like". That is, start with a `v` followed by a digit.
+* `description`: A short description for the package.
+* `keywords`: An `Array` of custom keywords that identify key aspects of the package. Reservoir can make use of these to group packages and make it easier for potential users to discover them.  For example, Lake's keywords could be `devtool`, `cli`, `dsl`,  `package-manager`, and `build-system`.
+* `homepage`: A URL to information about the package. Reservoir will already include a link to the package's GitHub repository. Thus, users are advised to specify something else for this.
+* `license`: An [SPFX license identifier](https://spdx.org/licenses/) for the package's license. For example, `Apache-2.0` or `MIT`.
+* `licenseFiles`: An `Array` of  files that contain license information. For example, `#["LICENSE", "NOTICE"]` for Apache 2.0. Defaults to `#["LICENSE"]`,
+* `readmeFile`: The relative path to the package's README. It should be a Markdown file containing an overview of the package. A nonstandard location can be used to provide a different README for Reservoir and GitHub. Defaults to `README.md`.
+* `reservoir`:  Whether Reservoir should index the package. Defaults to `true`. Set this to `false` to have Reservoir exclude the package from its index.
+
+
 ### Layout
 
+These options control the top-level directory layout of the package and its build directory. Further paths specified by libraries, executables, and targets within the package are relative to these directories.
+
 * `packagesDir`: The directory to which Lake should download remote dependencies. Defaults to `.lake/packages`.
-* `srcDir`: The directory containing the package's Lean source files. Defaults to the package's directory. (This will be passed to `lean` as the `-R` option.)
+* `srcDir`: The directory containing the package's Lean source files. Defaults to the package's directory.
 * `buildDir`: The directory to which Lake should output the package's build results. Defaults to `build`.
 * `leanLibDir`: The build subdirectory to which Lake should output the package's binary Lean libraries (e.g., `.olean`, `.ilean` files). Defaults to `lib`.
 * `nativeLibDir`: The build subdirectory to which Lake should output the package's native libraries (e.g., `.a`, `.so`, `.dll` files). Defaults to `lib`.
@@ -173,6 +195,8 @@ Lake provides a large assortment of configuration options for packages.
 * `irDir`: The build subdirectory to which Lake should output the package's intermediary results (e.g., `.c`, `.o` files). Defaults to `ir`.
 
 ### Build & Run
+
+These options configure how code is built and run in the package. Libraries, executables, and other targets within a package can further add to parts of this configuration.
 
 * `platformIndependent`: Asserts whether Lake should assume Lean modules are platform-independent. That is, whether lake should include the platform and platform-dependent elements in a module's trace. See the docstring of `Lake.LeanConfig.platformIndependent` for more details. Defaults to `none`.
 * `precompileModules`:  Whether to compile each module into a native shared library that is loaded whenever the module is imported. This speeds up the evaluation of metaprograms and enables the interpreter to run functions marked `@[extern]`. Defaults to `false`.
@@ -188,7 +212,20 @@ Lake provides a large assortment of configuration options for packages.
 * `weakLinkArgs`: An `Array` of additional arguments to pass to `leanc` when linking (e.g., binary executables or shared libraries) Unlike `moreLinkArgs`, these arguments do not affect the trace of the build result, so they can be changed without triggering a rebuild. They come *before* `moreLinkArgs`.
 * `extraDepTargets`: An `Array` of [target](#custom-targets) names that the package should always build before anything else.
 
+### Test & Lint
+
+The CLI commands `lake test` and `lake lint` use definitions configured by the workspace's root package to perform testing and linting (this referred to as the test or lint *driver*). In Lean configuration files, these can be specified by applying the `@[test_driver]` or `@[lint_driver]` to a `script`, `lean_exe`, or `lean_lb`. They can also be configured (in Lean or TOML format) via the following options on the package.
+
+* `testDriver`: The name of the script, executable, or library to drive `lake test`.
+* `testDriverArgs`: An `Array` of arguments to pass to the package's test driver.
+* `lintDriver`: The name of the script or executable used by `lake lint`. Libraries cannot be lint drivers.
+* `lintDriverArgs`: An `Array` of arguments to pass to the package's lint driver.
+
+You can specify definition from a dependency as a package's test or lint driver by using the syntax `<pkg>/<name>`. An executable driver will be built and then run, a script driver will just be run, and a library driver will just be built. A script or executable driver is run with any arguments configured by package (e.g., via `testDriverArgs`) followed by any specified on the CLI (e.g., via `lake lint -- <args>...`).
+
 ### Cloud Releases
+
+These options define a cloud release for the package. See the section on [GitHub Release Builds](#github-release-builds) for more information.
 
 * `releaseRepo`: The URL of the GitHub repository to upload and download releases of this package.  If `none` (the default), for downloads, Lake uses the URL the package was download from (if it is a dependency) and for uploads, uses `gh`'s default.
 * `buildArchive`: The name of the build archive for the GitHub cloud release.
@@ -267,7 +304,7 @@ extern_lib «target-name» (pkg : NPackage _package.name) :=
   -- a build function that produces its static library
 ```
 
-The declaration is essentially a wrapper around a `System.FilePath` [target](#custom-targets). Like such a target, the `pkg` parameter and its type specifier are optional and body should be a term of type `IndexBuildM (BuildJob System.FilePath)` function that builds the static library. The `pkg` parameter is of type `NPackage _package.name` to provably demonstrate that it is the package in which the external library is defined.
+The declaration is essentially a wrapper around a `System.FilePath` [target](#custom-targets). Like such a target, the `pkg` parameter and its type specifier are optional and body should be a term of type `FetchM (BuildJob System.FilePath)` function that builds the static library. The `pkg` parameter is of type `NPackage _package.name` to provably demonstrate that it is the package in which the external library is defined.
 
 ### Custom Targets
 
@@ -280,7 +317,7 @@ target «target-name» (pkg : NPackage _package.name) : α :=
   -- a build function that produces a `BuildJob α`
 ```
 
-The `pkg` parameter and its type specifier are optional and the body should be a term of type `IndexBuildM (BuildJob α)`. The `pkg` parameter is of type `NPackage _package.name` to provably demonstrate that it is the package in which the target is defined.
+The `pkg` parameter and its type specifier are optional and the body should be a term of type `FetchM (BuildJob α)`. The `pkg` parameter is of type `NPackage _package.name` to provably demonstrate that it is the package in which the target is defined.
 
 ## Defining New Facets
 
@@ -299,17 +336,16 @@ library_facet «facet-name» (lib : LeanLib) : α :=
   -- a build function that produces a `BuildJob α`
 ```
 
-In all of these, the object parameter and its type specifier are optional and the body should be a term of type `IndexBuildM (BuildJob α)`.
+In all of these, the object parameter and its type specifier are optional and the body should be a term of type `FetchM (BuildJob α)`.
 
 ## Adding Dependencies
 
-Lake packages can have dependencies. Dependencies are other Lake packages the current package needs in order to function. They can be sourced directly from a local folder (e.g., a subdirectory of the package) or come from remote Git repositories. For example, one can depend on [mathlib](https://github.com/leanprover-community/mathlib4) like so:
+Lake packages can have dependencies. Dependencies are other Lake packages the current package needs in order to function. They can be sourced directly from a local folder (e.g., a subdirectory of the package) or come from remote Git repositories. For example, one can depend on [mathlib](https://reservoir.lean-lang.org/@leanprover-community/mathlib) like so:
 
 ```lean
 package hello
 
-require mathlib from git
-  "https://github.com/leanprover-community/mathlib4.git"
+require "leanprover-community" / "mathlib"
 ```
 
 The next run of `lake build` (or refreshing dependencies in an editor like VSCode) will clone the mathlib repository and build it. Information on the specific revision cloned will then be saved to `lake-manifest.json` to enable reproducibility (i.e., ensure the same version of mathlib is used by future builds). To update `mathlib` after this, you will need to run `lake update` -- other commands do not update resolved dependencies.
@@ -318,30 +354,72 @@ For theorem proving packages which depend on `mathlib`, you can also run `lake n
 
 **NOTE:** For mathlib in particular, you should run `lake exe cache get` prior to a `lake build` after adding or updating a mathlib dependency. Otherwise, it will be rebuilt from scratch (which can take hours). For more information, see mathlib's [wiki page](https://github.com/leanprover-community/mathlib4/wiki/Using-mathlib4-as-a-dependency) on using it as a dependency.
 
-### Syntax of `require`
+### Lean `require`
 
-The `require` command has two forms:
+The `require` command in Lean Lake configuration follows the general syntax:
 
 ```lean
-require foo from "path"/"to"/"local"/"package" with NameMap.empty
-require bar from git "url.git"@"rev"/"optional"/"path-to"/"dir-with-pkg"
+require ["<scope>" /] <pkg-name> [@ <version>]
+  [from <source>] [with <options>]
 ```
 
-The first form adds a local dependency and the second form adds a Git dependency. For a Git dependency, the revision can be a commit hash, branch, or tag. Also, the `@"rev"` and `/"path-to"/"term"` parts of the `require` are optional.
+The `from` clause tells Lake where to locate the dependency.
+Without a `from` clause, Lake will lookup the package in the default registry (i.e., [Reservoir](https://reservoir.lean-lang.org)) and use the information there to download the package at the requested `version`. To specify a Git revision, use the syntax `@ git <rev>`.
 
-Both forms also support an optional `with` clause to specify arguments to pass to the dependency's package configuration (i.e., same as `args` in a `lake build -- <args...>` invocation). The elements of both the `from` and `with` clauses are proper terms so normal computation is supported within them (though parentheses made be required to disambiguate the syntax).
+The `scope` is used to disambiguate between packages in the registry with the same `pkg-name`. In Reservoir, this scope is the package owner (e.g., `leanprover` of [@leanprover/doc-gen4](https://reservoir.lean-lang.org/@leanprover/doc-gen4)).
 
-To `require` a package in a TOML configuration, the equivalent syntax is:
+
+The `with` clause specifies a `NameMap String` of Lake options used to configure the dependency. This is equivalent to passing `-K` options to the dependency on the command line.
+
+### Supported Sources
+
+Lake supports the following types of dependencies as sources in a `from` clause.
+
+#### Path Dependencies
+
+```
+from <path>
+```
+
+Lake loads the package located a fixed `path` relative to the requiring package's directory.
+
+#### Git Dependencies
+
+```
+from git <url> [@ <rev>] [/ <subDir>]
+```
+
+Lake clones the Git repository available at the specified fixed Git `url`, and checks out the specified revision `rev`. The revision can be a commit hash, branch, or tag. If none is provided, Lake defaults to `master`. After checkout, Lake loads the package located in `subDir` (or the repository root if no subdirectory is specified).
+
+### TOML `require`
+
+To `require` a package in a TOML configuration, the parallel syntax for the above examples is:
 
 ```toml
+# A Reservoir dependency
 [[require]]
-path = "path/to/local/package"
-options = {}
+name = "<pkg-name>"
+scope = "<scope>"
+version = "<version>"
+options = {<options>}
 
+# A Reservoir Git dependency
 [[require]]
-git = "url.git"
-rev = "rev"
-subDir = "optional/path-to/dir-with-pkg"
+name = "<pkg-name>"
+scope = "<scope>"
+rev = "<rev>"
+
+# A path dependency
+[[require]]
+name = "<pkg-name>"
+path = "<path>"
+
+# A Git dependency
+[[require]]
+name = "<pkg-name>"
+git = "<url>"
+rev = "<rev>"
+subDir = "<subDir>"
 ```
 
 ## GitHub Release Builds

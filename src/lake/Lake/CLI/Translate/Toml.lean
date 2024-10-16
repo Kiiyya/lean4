@@ -61,6 +61,7 @@ def LeanConfig.toToml (cfg : LeanConfig) (t : Table := {}) : Table :=
   |>.smartInsert `weakLinkArgs cfg.weakLinkArgs
 
 instance : ToToml LeanConfig := ⟨(toToml ·.toToml)⟩
+instance : ToToml LeanVer := ⟨(toToml <| toString ·)⟩
 
 protected def PackageConfig.toToml (cfg : PackageConfig) (t : Table := {}) : Table :=
   t.insert `name cfg.name
@@ -75,8 +76,25 @@ protected def PackageConfig.toToml (cfg : PackageConfig) (t : Table := {}) : Tab
   |>.smartInsert `releaseRepo (cfg.releaseRepo <|> cfg.releaseRepo?)
   |>.insertD `buildArchive (cfg.buildArchive?.getD cfg.buildArchive) (defaultBuildArchive cfg.name)
   |>.insertD `preferReleaseBuild cfg.preferReleaseBuild false
+  |>.insertD `version cfg.version v!"0.0.0"
+  |> smartInsertVerTags cfg.versionTags
+  |>.smartInsert `keywords cfg.description
+  |>.smartInsert `keywords cfg.keywords
+  |>.smartInsert `homepage cfg.homepage
+  |>.smartInsert `license cfg.license
+  |>.insertD `licenseFiles cfg.licenseFiles #["LICENSE"]
+  |>.insertD `readmeFile cfg.readmeFile "README.md"
+  |>.insertD `reservoir cfg.reservoir true
   |> cfg.toWorkspaceConfig.toToml
   |> cfg.toLeanConfig.toToml
+where
+  smartInsertVerTags (pat : StrPat) (t : Table) : Table :=
+    match pat with
+    | .mem s => t.insert `versionTags (toToml s)
+    | .startsWith p => t.insert `versionTags.startsWith (toToml p)
+    | .satisfies _ n =>
+      if n.isAnonymous || n == `default then t else
+      t.insert `versionTags.preset (toToml n)
 
 instance : ToToml PackageConfig := ⟨(toToml ·.toToml)⟩
 
@@ -105,14 +123,20 @@ protected def LeanExeConfig.toToml (cfg : LeanExeConfig) (t : Table  := {}) : Ta
 instance : ToToml LeanExeConfig := ⟨(toToml ·.toToml)⟩
 
 protected def Dependency.toToml (dep : Dependency) (t : Table  := {}) : Table :=
-  let t := t.insert `name dep.name
+  let t := t
+    |>.insert `name dep.name
+    |>.insertD `scope dep.scope ""
+    |>.smartInsert `version dep.version?
   let t :=
-    match dep.src with
-    | .path dir => t.insert `path (toToml dir)
-    | .git url rev subDir? =>
-      t.insert `git url
-      |>.smartInsert `rev rev
-      |>.smartInsert `subDir subDir?
+    if let some src := dep.src? then
+      match src with
+      | .path dir => t.insert `path (toToml dir)
+      | .git url rev subDir? =>
+        t.insert `git url
+        |>.smartInsert `rev rev
+        |>.smartInsert `subDir subDir?
+    else
+      t
   t.smartInsert `options <| dep.opts.fold (·.insert · ·) Table.empty
 
 instance : ToToml Dependency := ⟨(toToml ·.toToml)⟩
@@ -122,7 +146,10 @@ instance : ToToml Dependency := ⟨(toToml ·.toToml)⟩
 /-- Create a TOML table that encodes the declarative configuration of the package. -/
 def Package.mkTomlConfig (pkg : Package) (t : Table := {}) : Table :=
   pkg.config.toToml t
-  |>.insertD `testRunner pkg.testRunner .anonymous
+  |>.smartInsert `testDriver pkg.testDriver
+  |>.smartInsert `testDriverArgs pkg.testDriverArgs
+  |>.smartInsert `lintDriver pkg.lintDriver
+  |>.smartInsert `lintDriverArgs pkg.lintDriverArgs
   |>.smartInsert `defaultTargets pkg.defaultTargets
   |>.smartInsert `require pkg.depConfigs
   |>.smartInsert `lean_lib pkg.leanLibConfigs.toArray

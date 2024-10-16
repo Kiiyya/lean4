@@ -187,10 +187,17 @@ def resolveGlobalName (env : Environment) (ns : Name) (openDecls : List OpenDecl
 
 /-! # Namespace resolution -/
 
-def resolveNamespaceUsingScope? (env : Environment) (n : Name) : Name → Option Name
-  | .anonymous    => if env.isNamespace n then some n else none
-  | ns@(.str p _) => if env.isNamespace (ns ++ n) then some (ns ++ n) else resolveNamespaceUsingScope? env n p
-  | _             => unreachable!
+def resolveNamespaceUsingScope? (env : Environment) (n : Name) (ns : Name) : Option Name :=
+  match ns with
+  | .str p _ =>
+    if env.isNamespace (ns ++ n) then
+      some (ns ++ n)
+    else
+      resolveNamespaceUsingScope? env n p
+  | .anonymous =>
+    let n := n.replacePrefix rootNamespace .anonymous
+    if env.isNamespace n then some n else none
+  | _ => unreachable!
 
 def resolveNamespaceUsingOpenDecls (env : Environment) (n : Name) : List OpenDecl → List Name
   | [] => []
@@ -289,7 +296,7 @@ def filterFieldList [Monad m] [MonadError m] (n : Name) (cs : List (Name × List
   if cs.isEmpty then throwUnknownConstant n
   return cs.map (·.1)
 
-/-- Given a name `n`, return a list of possible interpretations for global constants.
+/-- Given a name `n`, returns a list of possible interpretations for global constants.
 
 Similar to `resolveGlobalName`, but discard any candidate whose `fieldList` is not empty.
 For identifiers taken from syntax, use `resolveGlobalConst` instead, which respects preresolved names. -/
@@ -307,7 +314,7 @@ def ensureNoOverload [Monad m] [MonadError m] (n : Name) (cs : List Name) : m Na
 def resolveGlobalConstNoOverloadCore [Monad m] [MonadResolveName m] [MonadEnv m] [MonadError m] (n : Name) : m Name := do
   ensureNoOverload n (← resolveGlobalConstCore n)
 
-def preprocessSyntaxAndResolve [Monad m] [MonadResolveName m] [MonadEnv m] [MonadError m] (stx : Syntax) (k : Name → m (List Name)) : m (List Name) := do
+def preprocessSyntaxAndResolve [Monad m] [MonadError m] (stx : Syntax) (k : Name → m (List Name)) : m (List Name) := do
   match stx with
   | .ident _ _ n pre => do
     let pre := pre.filterMap fun
@@ -320,10 +327,13 @@ def preprocessSyntaxAndResolve [Monad m] [MonadResolveName m] [MonadEnv m] [Mona
   | _ => throwErrorAt stx s!"expected identifier"
 
 /--
-Interpret the syntax `n` as an identifier for a global constant, and return a list of resolved
+Interprets the syntax `n` as an identifier for a global constant, and returns a list of resolved
 constant names that it could be referring to based on the currently open namespaces.
 This should be used instead of `resolveGlobalConstCore` for identifiers taken from syntax
 because `Syntax` objects may have names that have already been resolved.
+
+Consider using `realizeGlobalConst` if you need to handle reserved names, and
+`realizeGlobalConstWithInfo` if you want the syntax to show the resulting name's info on hover.
 
 ## Example:
 ```
@@ -345,7 +355,7 @@ def resolveGlobalConst [Monad m] [MonadResolveName m] [MonadEnv m] [MonadError m
   preprocessSyntaxAndResolve stx resolveGlobalConstCore
 
 /--
-Given a list of names produced by `resolveGlobalConst`, throw an error if the list does not contain
+Given a list of names produced by `resolveGlobalConst`, throws an error if the list does not contain
 exactly one element.
 Recall that `resolveGlobalConst` does not return empty lists.
 -/
@@ -355,8 +365,12 @@ def ensureNonAmbiguous [Monad m] [MonadError m] (id : Syntax) (cs : List Name) :
   | [c] => pure c
   | _   => throwErrorAt id s!"ambiguous identifier '{id}', possible interpretations: {cs.map mkConst}"
 
-/-- Interpret the syntax `n` as an identifier for a global constant, and return a resolved
+/-- Interprets the syntax `n` as an identifier for a global constant, and return a resolved
 constant name. If there are multiple possible interpretations it will throw.
+
+Consider using `realizeGlobalConstNoOverload` if you need to handle reserved names, and
+`realizeGlobalConstNoOverloadWithInfo` if you
+want the syntax to show the resulting name's info on hover.
 
 ## Example:
 ```
@@ -377,6 +391,16 @@ After `open Foo open Boo`, we have
 def resolveGlobalConstNoOverload [Monad m] [MonadResolveName m] [MonadEnv m] [MonadError m] (id : Syntax) : m Name := do
   ensureNonAmbiguous id (← resolveGlobalConst id)
 
+/--
+Finds a name that unambiguously resolves to the given name `n₀`.
+Considers suffixes of `n₀` and suffixes of aliases of `n₀` when "unresolving".
+Aliases are considered first.
+
+When `fullNames` is true, returns either `n₀` or `_root_.n₀`.
+
+This function is meant to be used for pretty printing.
+If `n₀` is an accessible name, then the result will be an accessible name.
+-/
 def unresolveNameGlobal [Monad m] [MonadResolveName m] [MonadEnv m] (n₀ : Name) (fullNames := false) : m Name := do
   if n₀.hasMacroScopes then return n₀
   if fullNames then
@@ -386,21 +410,30 @@ def unresolveNameGlobal [Monad m] [MonadResolveName m] [MonadEnv m] (n₀ : Name
   let mut initialNames := (getRevAliases (← getEnv) n₀).toArray
   initialNames := initialNames.push (rootNamespace ++ n₀)
   for initialName in initialNames do
-    match (← unresolveNameCore initialName) with
-    | none => continue
-    | some n => return n
+    if let some n ← unresolveNameCore initialName then
+      return n
   return n₀ -- if can't resolve, return the original
 where
   unresolveNameCore (n : Name) : m (Option Name) := do
+    if n.hasMacroScopes then return none
     let mut revComponents := n.componentsRev
     let mut candidate := Name.anonymous
-    for _ in [:revComponents.length] do
-      match revComponents with
-      | [] => return none
-      | cmpt::rest => candidate := cmpt ++ candidate; revComponents := rest
-      match (← resolveGlobalName candidate) with
-      | [(potentialMatch, _)] => if potentialMatch == n₀ then return some candidate else continue
-      | _ => continue
+    for cmpt in revComponents do
+      candidate := Name.appendCore cmpt candidate
+      if let [(potentialMatch, _)] ← resolveGlobalName candidate then
+        if potentialMatch == n₀ then
+          return some candidate
     return none
+
+def unresolveNameGlobalAvoidingLocals [Monad m] [MonadResolveName m] [MonadEnv m] [MonadLCtx m]
+    (n₀ : Name) (fullNames := false) : m Name := do
+  let mut n ← unresolveNameGlobal n₀ fullNames
+  unless (← getLCtx).usesUserName n do return n
+  -- `n` is also a local declaration
+  if n == n₀ then
+    -- `n` is the fully qualified name. So, we append the `_root_` prefix
+    return `_root_ ++ n
+  else
+    return n₀
 
 end Lean
