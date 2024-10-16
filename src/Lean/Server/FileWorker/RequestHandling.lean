@@ -671,12 +671,6 @@ partial def dbgPrintInfoTree (tree : Elab.InfoTree) (d := 0) : RequestM String :
     let children := (<- children.mapM (dbgPrintInfoTree . (d+1))).toList
     return s!"{dbgIndent d} IT.node $ {xxx}\n{children.map String.data |>.join |>.asString}"
 
-#synth ToString Syntax
-#check Syntax.instToStringSyntax
-#check Syntax.isOfKind
-#check Lean.Parser.Term.proj
-#check Lean.Parser.Term.app
-
 /-- Semantic token information for a given `Syntax`. -/
 structure LeanSemanticToken where
   /-- Syntax of the semantic token. -/
@@ -734,6 +728,7 @@ def computeDeltaLspSemanticTokens (tokens : Array AbsoluteLspSemanticToken) : Se
     lastPos := pos
   return { data }
 
+
 /--
 Collects all semantic tokens that can be deduced purely from `Syntax`
 without elaboration information.
@@ -746,8 +741,8 @@ partial def collectSyntaxBasedSemanticTokens : (stx : Syntax) → Array LeanSema
     let tokens := collectSyntaxBasedSemanticTokens e
     tokens.push ⟨field, SemanticTokenType.property⟩
   | stx => Id.run do
-    if noHighlightKinds.contains stx.getKind then
-      return #[]
+    -- if noHighlightKinds.contains stx.getKind then
+    --   return #[]
     let mut tokens :=
       if stx.isOfKind choiceKind then
         collectSyntaxBasedSemanticTokens stx[0]
@@ -759,7 +754,8 @@ partial def collectSyntaxBasedSemanticTokens : (stx : Syntax) → Array LeanSema
     let isHashKeyword := val.length > 1 && val.front == '#' && (val.get ⟨1⟩).isAlpha
     if ! isRegularKeyword && ! isHashKeyword then
       return tokens
-    return tokens.push ⟨stx, keywordSemanticTokenMap.findD val .keyword⟩
+    -- return tokens.push ⟨stx, keywordSemanticTokenMap.findD val .keyword⟩
+    return tokens
 
 /-- Collects all semantic tokens from the given `Elab.InfoTree`. -/
 def collectInfoBasedSemanticTokens (i : Elab.InfoTree) : Array LeanSemanticToken :=
@@ -782,7 +778,7 @@ def collectInfoBasedSemanticTokens (i : Elab.InfoTree) : Array LeanSemanticToken
     none
 
 /-- Computes the semantic tokens in the range [beginPos, endPos?). -/
-def handleSemanticTokens (beginPos : String.Pos) (endPos? : Option String.Pos)
+partial def handleSemanticTokens (beginPos : String.Pos) (endPos? : Option String.Pos)
     : RequestM (RequestTask SemanticTokens) := do
   let doc ← readDoc
   match endPos? with
