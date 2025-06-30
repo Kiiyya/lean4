@@ -90,29 +90,6 @@ def computeDeltaLspSemanticTokens (tokens : Array AbsoluteLspSemanticToken) : Se
     lastPos := pos
   return { data }
 
-/-- Analyzes the type (and the type's type) in order to apply `prop`, `type`, `proof` modifiers.
-  - If `ty` is `... -> Prop`, then `prop` is added.
-  - If `ty` is `... -> Type _`, then `type` is added.
-  - If `ty : Prop`, then `proof` is added.
--/
-def classifyType (ty : Expr) : MetaM <| List SemanticTokenModifier := do
-  -- ty is of form `... -> F ...`
-  Meta.forallTelescope ty.consumeTypeAnnotations.consumeMData (cleanupAnnotations := true) fun _ body => do
-    let mut mods := []
-    if ty.isForall then mods := .func :: mods
-    let body <- instantiateMVars body
-    match body.getAppFn.consumeTypeAnnotations.consumeMData with
-    | .sort .zero => mods := .prop :: mods
-    | .sort _     => mods := .type :: mods
-    | _ =>
-      -- let tyty <- Meta.inferType ty >>= Meta.whnf >>= instantiateMVars
-      let tyty <- Meta.inferType ty >>= instantiateMVars
-      match tyty with
-      | .sort .zero => mods := .proof :: mods
-      | .sort _ => mods := .value :: mods
-      | _ => pure ()
-    return mods
-
 /-- Create a `Expr.const ci.name levels` where the levels are inferred from the expectedType
   by comparing `ci.type` and `expectedType`. -/
 private def createConstFor (ci : ConstantInfo) (expectedType : Expr) : MetaM Expr := do
@@ -126,123 +103,150 @@ private def createConstFor (ci : ConstantInfo) (expectedType : Expr) : MetaM Exp
     return Expr.const ci.name levels
   else Meta.mkConstWithFreshMVarLevels ci.name
 
-inductive SumOrProdLike
-| neither
-| sum
-| prod
+inductive ValOrType where | type | value -- | universe
+inductive TypeOrProp where | type | prop
 
-/-- Get the `T` from `... -> T`. -/
-def getTarget (expr : Expr) : MetaM Expr := sorry
-/--
-  - `Vec ...` gives sum-like.
-  - `Prod ...` gives prod-like.
-  - `
- -/
-def getTypeLikeness (expr : Expr) : MetaM SumOrProdLike := sorry
+/-- Analyze an expression which might be an abbreviation, projection, or auxDecl. -/
+partial def analyze (expr : Expr) (cont : Expr -> Option ConstantInfo -> MetaM α) : MetaM α := do
+  let expr <- instantiateExprMVars expr
+  -- `expr` can be `Vec ℝ`, e.g. if the original expr was an `abbrev Vecℝ := Vec ℝ` and we unfolded it.
+  let f := expr.getAppFn
+  match f with
+  | .const name _ =>
+    let constInfo <- getConstInfo name
+    if let .defnInfo di := constInfo then
+      if di.hints.isAbbrev then
+        if let some f' <- Meta.unfoldDefinition? f then
+          return <- analyze (expr.updateFn f') cont
+    cont expr constInfo
+  -- | .proj structName fieldIdx obj => sorry -- todo
+  | .fvar id =>
+    let some localDecl := (<- getLCtx).find? id | cont expr none
 
-private partial def classifyConst (expr : Expr) : MetaM <| Option (SemanticTokenType × SumOrProdLike) := do
-  -- let mut mods := []
-  let expr <- instantiateMVars expr
-  let .const name _ := expr | return none
-  let some constInfo := (<- getEnv).find? name | return none
-  match constInfo with
-  | .inductInfo info =>
-    if Lean.isClass (<- getEnv) name then
-      return some ⟨.interface, .neither⟩
-    if Lean.isStructureLike (<- getEnv) name then
-      return some ⟨.struct, .neither⟩
-    return some ⟨.enum, .neither⟩
-  | .ctorInfo info =>
-    return some ⟨.enumMember, sorry⟩
-  | .defnInfo _info =>
-    if (<- getEnv).isProjectionFn name then
-      return some ⟨.property, mods⟩
-    return some ⟨.function, mods⟩
-  | .opaqueInfo info => return some ⟨.function, mods⟩
-  | .axiomInfo info => return some ⟨.axiom, mods⟩
-  | .thmInfo _ => return some ⟨.theorem, mods⟩
-  | .recInfo _info => return some ⟨.recursor, mods⟩
-  | .quotInfo _info => return some ⟨.quot, mods⟩
-
-private partial def highlightIdent (termInfo : Elab.TermInfo) (ctxInfo : Elab.ContextInfo) : MetaM <| Option <| LeanSemanticToken := do
--- private partial def highlightIdent (stx : Syntax) (expr : Expr) : MetaM <| Option <| LeanSemanticToken := do
-  let expr := termInfo.expr
-  let stx := termInfo.stx
-  -- let expr <- instantiateMVars expr
-  -- dbg_trace "highlightImp {stx} has expr {expr}"
-  let mut mods := []
-  -- if termInfo.isBinder then mods := .declaration :: mods
-  match expr.getAppFn with -- TODO also respect abbrevs, so if `abbrev ListN := List Nat`, then expr `List Nat`.
-  | .sort .zero => return some ⟨stx, .sort0, []⟩
-  | .sort _ => return some ⟨stx, .sortN, []⟩
-  | .fvar fvarId => do
-    let some localDecl := (<- getLCtx).find? fvarId
-      |
-        dbg_trace "ierbfdsvkzjcxn"
-        return none
-    if localDecl.isLet then mods := .«let» :: mods
-    -- Recall that `isAuxDecl` is an auxiliary declaration used to elaborate a recursive definition.
-    if localDecl.isAuxDecl then
+    -- try to replace auxDecl with an actual `.const` after the command as been elaborated
+    if localDecl.isImplementationDetail || localDecl.isAuxDecl then
       let constName := (<- getCurrNamespace) ++ localDecl.userName
-      let some ci := (<- getEnv).find? constName | -- I don't know what the proper way to resolve names is. This fails if we `def Nat.add`. -- TODO use realizeGlobalConstant
-        dbg_trace "BUG env has no {constName} Have auxDecl with user name {localDecl.userName}, and currNamespace = {<- getCurrNamespace}"
-        return none
+      let some ci := (<- getEnv).find? constName -- I don't know what the proper way to resolve names is. This fails if we `def Nat.add`
+        -- | dbg_trace "BUG env has no {constName} Have auxDecl with user name {localDecl.userName}, and currNamespace = {<- getCurrNamespace}"
+        | cont expr none -- this sometimes fails even if it shouldn't, I have no clue why.
       let const <- createConstFor ci localDecl.type
       let lctx' := (<- getLCtx).replaceFVarId localDecl.fvarId const
       let expr' := expr.replaceFVarId localDecl.fvarId const
       Meta.withLCtx lctx' (<- Meta.getLocalInstances) do
-        highlightIdent stx expr' -- retry, having replaced fvar auxDecl for actual environment item
+        analyze expr' cont
     else
-      return some ⟨stx, .variable, (<- classifyType localDecl.type) ++ mods⟩ -- TODO fix
-  | expr@(.const name _) =>
-    let expr <- instantiateMVars expr
-    let some constInfo := (<- getEnv).find? name | return none
-    mods := <- classifyType (<- Meta.inferType expr) -- infer common `type`, `prop`, `value`, `proof`,... modifiers
-    sorry
+      cont expr none
+  | _ => cont expr none
 
-  | .proj typeName field val =>
-    -- TODO: It is possible to have `Expr.proj` without associated StructureInfo, in which case the below will fail:
-    let some si := Lean.getStructureInfo? (<- getEnv) typeName |
-      dbg_trace "alskdjfhadsf"
-      return none
-    let some projFnName := si.getProjFn? field |
-      dbg_trace "skadlfhasidfuha"
-      return none
-    let expr := Expr.app (<- Meta.mkConstWithFreshMVarLevels projFnName) val
-    highlightIdent stx expr
-  | _ => do
-    dbg_trace "BUG {stx} fails to highlight :(, expr is {expr}, where the root ctor is Expr.{expr.ctorName}."
-    -- -- fallback:
-    -- let ty <- Meta.inferType expr
-    -- mods := (<- classifyType ty) ++ mods
-    return none
+set_option linter.unusedVariables false
+
+/-- Analyze a type `(a₁ : A₁) -> (a₂ : A₂) -> ... -> Target` in a way convenient for semantic
+  highlighting. Potentially unfolds some abbreviations. Invokes the continuation `cont` with:
+  - `exprType`: Potentially slightly simplified original `exprType`,
+  - `params = [a₁, a₂, ...]` as local decls,
+  - `Target`,
+  - `T` from `Target ≡ (T ...)`,
+  - `constInfo`: Info of `T` if it is a constant.  -/
+def analyzeType
+  (exprType : Expr)
+  (cont : (exprType : Expr) -> (params : Array Expr) -> (Target T : Expr) -> TypeOrProp -> ValOrType -> Option ConstantInfo -> MetaM α)
+  : MetaM α := do
+  let exprType <- instantiateExprMVars exprType
+  Meta.forallTelescope exprType (cleanupAnnotations := true) fun params Target => do
+    let T := Target.getAppFn -- todo make look through abbrevs
+    let constInfo <- Option.sequence (T.constName?.map getConstInfo)
+    match Target with
+    | .sort .zero => cont exprType params Target T .prop .type constInfo
+    | .sort _     => cont exprType params Target T .type .type constInfo
+    | _ =>
+      Meta.forallTelescope (<- Meta.inferType exprType >>= instantiateExprMVars) fun _ exprTypeType => do
+        match exprTypeType with
+        | .sort .zero => cont exprType params Target T .prop .value constInfo
+        | .sort _     => cont exprType params Target T .type .value constInfo
+        | _           => cont exprType params Target T .type .value constInfo -- should never happen, but whatever
+
+/- Highlight an expression. Some examples:
+  - If `termInfo.expr` is `Vec`, so has type `Type -> Nat -> Type`, we look at:
+    1. The expr itself, so `Vec`, in order to figure out whether it is sum-like or prod-like, via `ConstantInfo`.
+    2. The type of the expr, so `Type -> Nat -> Type`, in order to figure out whether it is `⟨propOrType, valueOrType⟩`.
+-/
+partial def highlight (termInfo : Elab.TermInfo) : MetaM (Option LeanSemanticToken) := do
+  analyze termInfo.expr fun expr exprConstInfo? => do
+    analyzeType (<- Meta.inferType expr) fun exprType params Target T typeOrProp valOrType exprTypeConstInfo? => do
+      let mut mods : List SemanticTokenModifier := []
+      if termInfo.isBinder then mods := .declaration :: mods
+      if params.size > 0 then mods := .func :: mods -- todo ignore implicit, instance, auto params
+      match (typeOrProp, valOrType) with
+      | (.type, .type) => mods := .type :: mods
+      | (.type, .value) => mods := .value :: mods
+      | (.prop, .type) => mods := .prop :: mods
+      | (.prop, .value) => mods := .proof :: mods
+
+      let env <- getEnv
+      let stx := termInfo.stx
+      match exprConstInfo? with
+      | some (.inductInfo ii) =>
+        let isClass := Lean.isClass env ii.name
+        let isStruct := Lean.isStructureLike env ii.name
+        if isClass then mods := .typeclass :: mods
+        if isStruct then mods := .productLike :: mods else mods := .sumLike :: mods
+        match (isClass, isStruct) with
+        | (true, _) => return some ⟨stx, .interface, mods⟩
+        | (false, true) => return some ⟨stx, .struct, mods⟩
+        | (false, false) => return some ⟨stx, .enum, mods⟩
+      | some (.ctorInfo ci) =>
+        let isStruct := Lean.isStructureLike env ci.induct
+        if isStruct then
+          mods := .sumLike :: mods
+          return some ⟨stx, .constructor, mods⟩ -- this is e.g. `Prod.mk`
+        else
+          mods := .productLike :: mods
+          return some ⟨stx, .enumMember, mods⟩
+      | some (.defnInfo di) =>
+        if env.isProjectionFn di.name then -- e.g. `Prod.fst`
+          -- return some ⟨stx, .property, .productLike :: mods⟩
+          return some ⟨stx, .property, mods⟩
+        return some ⟨stx, .function, mods⟩
+      | some _ => return none -- todo
+      | none =>
+        match expr with
+        | .sort .zero => return some ⟨stx, .sort0, mods⟩
+        | .sort _ => return some ⟨stx, .sortN, mods⟩
+        | .fvar id =>
+          let ldecl := (<- getLCtx).find? id
+          -- if ldecl.map (not ·.isLet) |>.getD false then
+          --   return some ⟨stx, .parameter, mods⟩ -- if the localDecl is not a let-binder, it (probably) is a parameter
+          return some ⟨stx, .variable, mods⟩
+        | _ => return none -- todo
 
 /-- Collects all semantic tokens from the given `Elab.InfoTree`. -/
 partial def collectInfoBasedSemanticTokens (i : Elab.InfoTree) (envAfter : Environment) : RequestM <| List LeanSemanticToken := do
   let notFlat <- i.deepestNodesM fun ctxInfo elabInfo _ => do
     let .ofTermInfo termInfo := elabInfo | return none
     let .original .. := termInfo.stx.getHeadInfo | return none
-    -- let tmp <- ctxInfo.runMetaM termInfo.lctx <| Meta.withReducible <| withEnv envAfter <| do
-    let tmp <- termInfo.runMetaM ctxInfo <| Meta.withReducible <| withEnv envAfter <| go termInfo.expr termInfo.stx
-    return some tmp
+    termInfo.runMetaM ctxInfo do
+      withEnv envAfter do
+        Meta.withReducible do -- we want to unfold `abbrev`, e.g. `abbrev Vec3f := Vec 3 Float` should be highlighted the same likeness of `Vec`, and not def-like.
+          -- return some (<- go termInfo.expr termInfo.stx)
+          Option.map ([·]) <$> highlight termInfo
   return notFlat.flatten
-where
-  go (expr : Expr) (stx : Syntax) : MetaM (List LeanSemanticToken) := do
-    match stx with
-    -- ! Wait, recursively adding `go` makes no sense, it's all the same expr anyway...
-    -- dbg_trace "{dbgIndent d}go {repr stx}"
-    | `($s₁.$s₂:ident) => do -- For example `NS.c.add`
-      -- dbg_trace "{dbgIndent d}go[$e₁.$e₂:ident] {stx}"
-      return (<- go expr s₁) ++ (<- highlightIdent termInfo ctxInfo).toList
-    -- | `($s₁.$s₂:fieldIdx) => do -- For example `NS.c.2`
-    --   -- dbg_trace "{dbgIndent d}go[$e₁.$e₂:fieldIdx] {stx}"
-    --   return (<- go expr s₁) ++ (<- highlightIdent s₂ expr).toList
-    | `(@$_:ident)                       => Option.toList <$> highlightIdent stx expr
-    | `(Parser.Term.dotIdent| .$_:ident) => Option.toList <$> highlightIdent stx expr
-    | `($_:ident)                        => Option.toList <$> highlightIdent stx expr
-    | _ =>
-      if stx.isOfKind choiceKind then go expr stx[0]
-      else stx.getArgs.foldlM (fun tokens stx => return tokens ++ (<- go expr stx)) []
+-- where
+--   go (expr : Expr) (stx : Syntax) : MetaM (List LeanSemanticToken) := do
+--     match stx with
+--     -- ! Wait, recursively adding `go` makes no sense, it's all the same expr anyway...
+--     -- dbg_trace "{dbgIndent d}go {repr stx}"
+--     | `($s₁.$s₂:ident) => do -- For example `NS.c.add`
+--       -- dbg_trace "{dbgIndent d}go[$e₁.$e₂:ident] {stx}"
+--       return (<- go expr s₁) ++ (<- highlightIdent termInfo ctxInfo).toList
+--     -- | `($s₁.$s₂:fieldIdx) => do -- For example `NS.c.2`
+--     --   -- dbg_trace "{dbgIndent d}go[$e₁.$e₂:fieldIdx] {stx}"
+--     --   return (<- go expr s₁) ++ (<- highlightIdent s₂ expr).toList
+--     | `(@$_:ident)                       => Option.toList <$> highlightIdent stx expr
+--     | `(Parser.Term.dotIdent| .$_:ident) => Option.toList <$> highlightIdent stx expr
+--     | `($_:ident)                        => Option.toList <$> highlightIdent stx expr
+--     | _ =>
+--       if stx.isOfKind choiceKind then go expr stx[0]
+--       else stx.getArgs.foldlM (fun tokens stx => return tokens ++ (<- go expr stx)) []
 
 
 def computeSemanticTokens  (doc : EditableDocument) (beginPos : String.Pos)
