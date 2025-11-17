@@ -202,6 +202,11 @@ partial def highlight (termInfo : Elab.TermInfo) : MetaM (Option LeanSemanticTok
         else
           mods := .productLike :: mods
           return some ⟨stx, .enumMember, mods⟩
+      | some (.thmInfo di) =>
+        if env.isProjectionFn di.name then -- e.g. `Prod.fst`
+          -- return some ⟨stx, .property, .productLike :: mods⟩
+          return some ⟨stx, .property, mods⟩
+        return some ⟨stx, .theorem, mods⟩
       | some (.defnInfo di) =>
         if env.isProjectionFn di.name then -- e.g. `Prod.fst`
           -- return some ⟨stx, .property, .productLike :: mods⟩
