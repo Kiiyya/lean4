@@ -7,6 +7,8 @@ module
 
 prelude
 public import Lean.Server.Requests
+import Lean.DocString.Syntax
+import Init.Data.List.Sort
 
 public section
 
@@ -46,8 +48,10 @@ structure LeanSemanticToken where
   stx  : Syntax
   /-- Type of the semantic token. -/
   type : SemanticTokenType
-  /-- In case of overlap, higher-priority tokens will take precedence -/
+  /-- In case of overlap, higher-priority tokens will take precendence -/
   priority : Nat := 5
+  /-- Modifiers on the semantic token, for example `binder`, `mutable`, `prop`, ... -/
+  mods : List SemanticTokenModifier
 
 /-- Semantic token information with absolute LSP positions. -/
 structure AbsoluteLspSemanticToken where
@@ -57,9 +61,13 @@ structure AbsoluteLspSemanticToken where
   tailPos : Lsp.Position
   /-- Start position of the semantic token. -/
   type    : SemanticTokenType
-  /-- In case of overlap, higher-priority tokens will take precedence -/
+  /-- In case of overlap, higher-priority tokens will take precendence -/
   priority : Nat := 5
-  deriving BEq, Hashable, FromJson, ToJson
+    /-- Modifiers on the semantic token, for example `binder`, `mutable`, `prop`, ... -/
+  mods : List SemanticTokenModifier
+  deriving FromJson, ToJson
+
+
 
 /--
 Given a set of `LeanSemanticToken`, computes the `AbsoluteLspSemanticToken` with absolute
@@ -258,10 +266,10 @@ words, it should be true that `∀ t ∈ tokens, t.pos < t.tailPos`.
 -/
 def handleOverlappingSemanticTokens (tokens : Array AbsoluteLspSemanticToken) :
     Array AbsoluteLspSemanticToken := Id.run do
-  -- `insertionSort` is used because a stable sort is needed here in order to allow the final
+  -- `insertionSort` is used because a stable sopt is needed here in order to allow the final
   -- tiebreaker to be position in the input array
   let count := tokens.size
-  let tokens := tokens.toList.mergeSort fun ⟨pos1, tailPos1, _, _⟩ ⟨pos2, tailPos2, _, _⟩ =>
+  let tokens := tokens.toList.mergeSort fun ⟨pos1, tailPos1, _, _, _⟩ ⟨pos2, tailPos2, _, _, _⟩ =>
     pos1 < pos2 || pos1 == pos2 && tailPos1 ≤ tailPos2
   let mut st : HandleOverlapState := {
     current? := none
@@ -281,16 +289,16 @@ token-relative positioning.
 See https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_semanticTokens.
 -/
 def computeDeltaLspSemanticTokens (tokens : Array AbsoluteLspSemanticToken) : SemanticTokens := Id.run do
-  let tokens := tokens.qsort fun ⟨pos1, tailPos1, _, _⟩ ⟨pos2, tailPos2, _, _⟩ =>
+  let tokens := tokens.qsort fun ⟨pos1, tailPos1, _, _, _⟩ ⟨pos2, tailPos2, _, _, _⟩ =>
     pos1 < pos2 || pos1 == pos2 && tailPos1 <= tailPos2
   let mut data : Array Nat := Array.mkEmpty (5*tokens.size)
   let mut lastPos : Lsp.Position := ⟨0, 0⟩
-  for ⟨pos, tailPos, tokenType, _⟩ in tokens do
+  for ⟨pos, tailPos, tokenType, _, tokenMods⟩ in tokens do
     let deltaLine := pos.line - lastPos.line
     let deltaStart := pos.character - (if pos.line == lastPos.line then lastPos.character else 0)
     let length := tailPos.character - pos.character
     let tokenType := tokenType.toNat
-    let tokenModifiers := 0
+    let tokenModifiers := SemanticTokenModifier.encode tokenMods
     data := data ++ #[deltaLine, deltaStart, length, tokenType, tokenModifiers]
     lastPos := pos
   return { data }
@@ -344,7 +352,7 @@ where
       -- so they get a lower priority.
       | .string => 3
       | _ => 5
-    modify (·.push { stx := tk, type := k, priority })
+    modify (·.push { stx := tk, type := k, priority, mods := [] })
 
   go (stx : Syntax) : StateM (Array LeanSemanticToken) Unit := do
   match stx with
@@ -466,10 +474,10 @@ without elaboration information.
 partial def collectSyntaxBasedSemanticTokens (text : FileMap) : (stx : Syntax) → Array LeanSemanticToken
   | `($e.$id:ident)    =>
     let tokens := collectSyntaxBasedSemanticTokens text e
-    tokens.push { stx := id, type := SemanticTokenType.property }
+    tokens.push { stx := id, type := SemanticTokenType.property, mods := [] }
   | `($e |>.$field:ident) =>
     let tokens := collectSyntaxBasedSemanticTokens text e
-    tokens.push { stx := field, type := SemanticTokenType.property }
+    tokens.push { stx := field, type := SemanticTokenType.property, mods := [] }
   | stx => Id.run do
     if noHighlightKinds.contains stx.getKind then
       return #[]
@@ -490,8 +498,157 @@ partial def collectSyntaxBasedSemanticTokens (text : FileMap) : (stx : Syntax) �
     let isHashKeyword := val.length > 1 && val.front == '#' && isIdFirst (String.Pos.Raw.get val ⟨1⟩)
     if ! isRegularKeyword && ! isHashKeyword then
       return tokens
-    return tokens.push { stx, type := keywordSemanticTokenMap.getD val .keyword }
+    return tokens.push { stx, type := keywordSemanticTokenMap.getD val .keyword, mods := [] }
 
+
+/-- Create a `Expr.const ci.name levels` where the levels are inferred from the expectedType
+  by comparing `ci.type` and `expectedType`. -/
+private def createConstFor (ci : ConstantInfo) (expectedType : Expr) : MetaM Expr := do
+  let mvars : List Level <- Meta.mkFreshLevelMVarsFor ci
+  let ty := ci.type.instantiateLevelParams ci.levelParams mvars
+  if <- Meta.isDefEq ty expectedType then
+    let levels <- mvars.mapM fun l => do
+      if let some level := <- Lean.getLevelMVarAssignment? l.mvarId! then
+        return level
+      else return default
+    return Expr.const ci.name levels
+  else Meta.mkConstWithFreshMVarLevels ci.name
+
+inductive ValOrType where | type | value -- | universe
+inductive TypeOrProp where | type | prop
+
+/-- Analyze an expression which might be an abbreviation, projection, or auxDecl. -/
+partial def analyze (expr : Expr) (cont : Expr -> Option ConstantInfo -> MetaM α) : MetaM α := do
+  let expr <- instantiateExprMVars expr
+  -- `expr` can be `Vec ℝ`, e.g. if the original expr was an `abbrev Vecℝ := Vec ℝ` and we unfolded it.
+  let f := expr.getAppFn
+  match f with
+  | .const name _ =>
+    let constInfo <- getConstInfo name
+    if let .defnInfo di := constInfo then
+      if di.hints.isAbbrev then
+        if let some f' <- Meta.unfoldDefinition? f then
+          return <- analyze (expr.updateFn f') cont
+    cont expr constInfo
+  -- | .proj structName fieldIdx obj => sorry -- todo
+  | .fvar id =>
+    let some localDecl := (<- getLCtx).find? id | cont expr none
+
+    -- try to replace auxDecl with an actual `.const` after the command as been elaborated
+    if localDecl.isImplementationDetail || localDecl.isAuxDecl then
+      let constName := (<- getCurrNamespace) ++ localDecl.userName
+      let some ci := (<- getEnv).find? constName -- I don't know what the proper way to resolve names is. This fails if we `def Nat.add`
+        -- | dbg_trace "BUG env has no {constName} Have auxDecl with user name {localDecl.userName}, and currNamespace = {<- getCurrNamespace}"
+        | cont expr none -- this sometimes fails even if it shouldn't, I have no clue why.
+      let const <- createConstFor ci localDecl.type
+      let lctx' := (<- getLCtx).replaceFVarId localDecl.fvarId const
+      let expr' := expr.replaceFVarId localDecl.fvarId const
+      Meta.withLCtx lctx' (<- Meta.getLocalInstances) do
+        analyze expr' cont
+    else
+      cont expr none
+  | _ => cont expr none
+
+set_option linter.unusedVariables false
+
+/-- Analyze a type `(a₁ : A₁) -> (a₂ : A₂) -> ... -> Target` in a way convenient for semantic
+  highlighting. Potentially unfolds some abbreviations. Invokes the continuation `cont` with:
+  - `exprType`: Potentially slightly simplified original `exprType`,
+  - `params = [a₁, a₂, ...]` as local decls,
+  - `Target`,
+  - `T` from `Target ≡ (T ...)`,
+  - `constInfo`: Info of `T` if it is a constant.  -/
+def analyzeType
+  (exprType : Expr)
+  (cont : (exprType : Expr) -> (params : Array Expr) -> (Target T : Expr) -> TypeOrProp -> ValOrType -> Option ConstantInfo -> MetaM α)
+  : MetaM α := do
+  let exprType <- instantiateExprMVars exprType
+  Meta.forallTelescope exprType (cleanupAnnotations := true) fun params Target => do
+    let T := Target.getAppFn -- todo make look through abbrevs
+    let constInfo <- Option.sequence (T.constName?.map getConstInfo)
+    match Target with
+    | .sort .zero => cont exprType params Target T .prop .type constInfo
+    | .sort _     => cont exprType params Target T .type .type constInfo
+    | _ =>
+      Meta.forallTelescope (<- Meta.inferType exprType >>= instantiateExprMVars) fun _ exprTypeType => do
+        match exprTypeType with
+        | .sort .zero => cont exprType params Target T .prop .value constInfo
+        | .sort _     => cont exprType params Target T .type .value constInfo
+        | _           => cont exprType params Target T .type .value constInfo -- should never happen, but whatever
+
+/- Highlight an expression. Some examples:
+  - If `termInfo.expr` is `Vec`, so has type `Type -> Nat -> Type`, we look at:
+    1. The expr itself, so `Vec`, in order to figure out whether it is sum-like or prod-like, via `ConstantInfo`.
+    2. The type of the expr, so `Type -> Nat -> Type`, in order to figure out whether it is `⟨propOrType, valueOrType⟩`.
+-/
+partial def highlight (termInfo : Elab.TermInfo) : MetaM (Option LeanSemanticToken) := do
+  analyze termInfo.expr fun expr exprConstInfo? => do
+    analyzeType (<- Meta.inferType expr) fun exprType params Target T typeOrProp valOrType exprTypeConstInfo? => do
+      let mut mods : List SemanticTokenModifier := []
+      if termInfo.isBinder then mods := .declaration :: mods
+      if params.size > 0 then mods := .func :: mods -- todo ignore implicit, instance, auto params
+      match (typeOrProp, valOrType) with
+      | (.type, .type) => mods := .type :: mods
+      | (.type, .value) => mods := .value :: mods
+      | (.prop, .type) => mods := .prop :: mods
+      | (.prop, .value) => mods := .proof :: mods
+
+      let env <- getEnv
+      let stx := termInfo.stx
+      match exprConstInfo? with
+      | some (.inductInfo ii) =>
+        let isClass := Lean.isClass env ii.name
+        let isStruct := Lean.isNonRecStructure env ii.name
+        -- let isStruct :=
+        if isClass then mods := .typeclass :: mods
+        if isStruct then mods := .productLike :: mods else mods := .sumLike :: mods
+        match (isClass, isStruct) with
+        | (true, _) => return some ⟨stx, .interface, 5, mods⟩
+        | (false, true) => return some ⟨stx, .struct, 5, mods⟩
+        | (false, false) => return some ⟨stx, .enum, 5, mods⟩
+      | some (.ctorInfo ci) =>
+        let isStruct := Lean.isNonRecStructure env ci.induct
+        if isStruct then
+          mods := .sumLike :: mods
+          return some ⟨stx, .constructor, 5, mods⟩ -- this is e.g. `Prod.mk`
+        else
+          mods := .productLike :: mods
+          return some ⟨stx, .enumMember, 5, mods⟩
+      | some (.thmInfo di) =>
+        if env.isProjectionFn di.name then -- e.g. `Prod.fst`
+          -- return some ⟨stx, .property, .productLike :: mods⟩
+          return some ⟨stx, .property, 5, mods⟩
+        return some ⟨stx, .theorem, 5, mods⟩
+      | some (.defnInfo di) =>
+        if env.isProjectionFn di.name then -- e.g. `Prod.fst`
+          -- return some ⟨stx, .property, .productLike :: mods⟩
+          return some ⟨stx, .property, 5, mods⟩
+        return some ⟨stx, .function, 5, mods⟩
+      | some _ => return none -- todo
+      | none =>
+        match expr with
+        | .sort .zero => return some ⟨stx, .sort0, 5, mods⟩
+        | .sort _ => return some ⟨stx, .sortN, 5, mods⟩
+        | .fvar id =>
+          let ldecl := (<- getLCtx).find? id
+          -- if ldecl.map (not ·.isLet) |>.getD false then
+          --   return some ⟨stx, .parameter, mods⟩ -- if the localDecl is not a let-binder, it (probably) is a parameter
+          return some ⟨stx, .variable, 5, mods⟩
+        | _ => return none -- todo
+
+/-- Collects all semantic tokens from the given `Elab.InfoTree`. -/
+partial def collectInfoBasedSemanticTokens (i : Elab.InfoTree) (envAfter : Environment) : RequestM <| List LeanSemanticToken := do
+  let notFlat <- i.deepestNodesM fun ctxInfo elabInfo _ => do
+    let .ofTermInfo termInfo := elabInfo | return none
+    let .original .. := termInfo.stx.getHeadInfo | return none
+    termInfo.runMetaM ctxInfo do
+      withEnv envAfter do
+        Meta.withReducible do -- we want to unfold `abbrev`, e.g. `abbrev Vec3f := Vec 3 Float` should be highlighted the same likeness of `Vec`, and not def-like.
+          -- return some (<- go termInfo.expr termInfo.stx)
+          Option.map ([·]) <$> highlight termInfo
+  return notFlat.flatten
+
+/-
 /-- Collects all semantic tokens from the given `Elab.InfoTree`. -/
 def collectInfoBasedSemanticTokens (i : Elab.InfoTree) : Array LeanSemanticToken :=
   List.toArray <| i.deepestNodes fun _ info _ => do
@@ -511,6 +668,7 @@ def collectInfoBasedSemanticTokens (i : Elab.InfoTree) : Array LeanSemanticToken
     if ti.stx.getKind == Parser.Term.identProjKind then
       return {stx := ti.stx, type := SemanticTokenType.property }
     none
+-/
 
 /--
 A debugging utility for inspecting sets of collected tokens, classified by line and sorted by
@@ -518,23 +676,25 @@ column.
 -/
 def dbgShowTokens (text : FileMap) (toks : Array LeanSemanticToken) : String := Id.run do
   let mut byLine : Std.HashMap Nat (Array (Nat × Nat × LeanSemanticToken)) := {}
-  for ⟨stx, tok, prio⟩ in toks do
+  for ⟨stx, tok, prio, mods⟩ in toks do
     if let some ⟨⟨l, c1⟩, ⟨_, c2⟩⟩ := text.lspRangeOfStx? stx then
-      byLine := byLine.alter l fun x? => some (x?.getD #[] |>.push (c1, c2, ⟨stx, tok, prio⟩))
+      byLine := byLine.alter l fun x? => some (x?.getD #[] |>.push (c1, c2, ⟨stx, tok, prio, mods⟩))
   let mut out := ""
   for (l, vals) in byLine.toList.mergeSort (fun x y => x.1 ≤ y.1) do
     let vals := vals.toList.mergeSort fun x y => x.1 ≤ y.1
-    out := out ++ s!"{l}:\t{vals.map (fun (c1, c2, ⟨stx, tok, prio⟩) => (c1, c2, stx, toJson tok, prio))}\n"
+    out := out ++ s!"{l}:\t{vals.map (fun (c1, c2, ⟨stx, tok, prio, mods⟩) => (c1, c2, stx, toJson tok, prio, toJson mods))}\n"
   out
 
 def computeSemanticTokens  (doc : EditableDocument) (beginPos : String.Pos.Raw)
     (endPos? : Option String.Pos.Raw) (snaps : List Snapshots.Snapshot) : RequestM SemanticTokens := do
   let mut leanSemanticTokens := #[]
-  for s in snaps do
-    if s.endPos <= beginPos then
+  for h : i in [0 : snaps.length] do
+    let snap := snaps[i]
+    let snapAfter := snaps[i + 1]?.getD snap
+    if snap.endPos <= beginPos then
       continue
-    let syntaxBasedSemanticTokens := collectSyntaxBasedSemanticTokens doc.meta.text s.stx
-    let infoBasedSemanticTokens := collectInfoBasedSemanticTokens s.infoTree
+    let syntaxBasedSemanticTokens := collectSyntaxBasedSemanticTokens doc.meta.text snap.stx
+    let infoBasedSemanticTokens <- collectInfoBasedSemanticTokens snap.infoTree snapAfter.env
     leanSemanticTokens := leanSemanticTokens ++ syntaxBasedSemanticTokens ++ infoBasedSemanticTokens
     RequestM.checkCancelled
   let absoluteLspSemanticTokens := computeAbsoluteLspSemanticTokens doc.meta.text beginPos endPos? leanSemanticTokens
