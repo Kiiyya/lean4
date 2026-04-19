@@ -454,14 +454,36 @@ inductive SemanticTokenType where
   | decorator
   -- Extensions
   | leanSorryLike
-  deriving ToJson, FromJson, BEq, Hashable
+  /-- `Prop` -/
+  | sort0
+  /-- `Type` -/
+  | sortN
+  /-- Constants (`def`s which are not functions.) -/
+  | const
+  | proof
+  | value
+  | proposition
+  | axiom
+  | «theorem»
+  | unknown
+  | constructor
+  | recursor
+  | quot
+  deriving ToJson, FromJson, Repr, BEq, Hashable
 
 -- must be in the same order as the constructors
 def SemanticTokenType.names : Array String :=
   #["keyword", "variable", "property", "function", "namespace", "type", "class",
     "enum", "interface", "struct", "typeParameter", "parameter", "enumMember",
     "event", "method", "macro", "modifier", "comment", "string", "number",
-    "regexp", "operator", "decorator", "leanSorryLike"]
+    "regexp", "operator", "decorator", "leanSorryLike",
+    "sort0", "sortN",
+    "const", "proof", "value", "proposition", "axiom", "theorem",
+    "unknown",
+    "constructor",
+    "recursor",
+    "quot"
+    ]
 
 def SemanticTokenType.toNat (tokenType : SemanticTokenType) : Nat :=
   tokenType.ctorIdx
@@ -487,15 +509,51 @@ inductive SemanticTokenModifier where
   | modification
   | documentation
   | defaultLibrary
+  /-- `inductive T : ... -> Type` or `def T : ... -> Type := ...`. -/
+  | type
+  /-- `inductive P : ... -> Prop` or `def P : ... -> Prop := ...`. -/
+  | prop
+  /-- The `x` in `x : List α`, or a `theorem` or `def`. -/
+  | value
+  /-- The `h` in `h : n <= 5`, or a `theorem`, or `def`. -/
+  | proof
+  /-- `class` or `class inductive`. Also applied to instances of classes. -/
+  | typeclass
+  /-- Any inductive type `T` for which `instance : Monad T` exists. -/
+  | monadic
+  /-- Whether this def is a projection function `myStruct.projFn` or built-in projection `myStruct.1`. -/
+  | proj
+  /-- Whether the inductive type is structure-like. -/
+  | struct
+  /-- An fvar that is a let expression. -/
+  | «let»
+  | «partial»
+  | func
+  | «unsafe»
+  | nested
+  | recursive
+  | reflexive
+  | productLike
+  | sumLike
   deriving ToJson, FromJson
 
 -- must be in the same order as the constructors
 def SemanticTokenModifier.names : Array String :=
   #["declaration", "definition", "readonly", "static", "deprecated", "abstract",
-    "async", "modification", "documentation", "defaultLibrary"]
+    "async", "modification", "documentation", "defaultLibrary",
+    "type", "prop", "value", "proof",
+    "typeclass", "monadic",
+    "proj", "struct", "let", "partial", "func", "unsafe",
+    "nested", "recursive", "reflexive",
+    "productLike", "sumLike"
+  ]
 
 def SemanticTokenModifier.toNat (modifier : SemanticTokenModifier) : Nat :=
   modifier.ctorIdx
+
+/-- Semantic token modifiers are encoded via a bitmap. -/
+def SemanticTokenModifier.encode (modifiers : List SemanticTokenModifier) : Nat :=
+  modifiers.foldl (· ||| 1 <<< ·.toNat) 0
 
 -- sanity check
 example {v : SemanticTokenModifier} : open SemanticTokenModifier in
