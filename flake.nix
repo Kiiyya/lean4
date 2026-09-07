@@ -10,6 +10,10 @@
   inputs.nixpkgs-older.url = "https://channels.nixos.org/nixos-18.03/nixexprs.tar.xz";
   inputs.nixpkgs-older.flake = false;
 
+  # Packages this fork's toolchain as a single derivation for `elan toolchain link`.
+  inputs.elan-nix.url = "github:Kiiyya/elan-nix";
+  inputs.elan-nix.inputs.nixpkgs.follows = "nixpkgs";
+
   outputs = inputs: builtins.foldl' inputs.nixpkgs.lib.attrsets.recursiveUpdate {} (builtins.map (system:
     let
       pkgs = import inputs.nixpkgs { inherit system; };
@@ -66,6 +70,14 @@
         default = devShellWithDist pkgs;
         oldGlibc = devShellWithDist pkgsDist-old;
         oldGlibcAArch = devShellWithDist pkgsDist-old-aarch;
+      };
+
+      # This fork's Lean toolchain, in `elan toolchain link`-compatible layout.
+      # `pkgs.lean4` (currently 4.30.0) must match this fork's release lineage.
+      packages.${system}.default = inputs.elan-nix.lib.mkSourceToolchain pkgs {
+        src = inputs.self;
+        version = "4.30.0-kiiya";
+        elanName = "lean4_30_0-kiiya";
       };
     }) ["x86_64-linux" "aarch64-linux" "aarch64-darwin"]);
 }
