@@ -77,7 +77,7 @@
       packages.${system}.default = inputs.elan-nix.lib.mkSourceToolchain pkgs {
         src = inputs.self;
         version = "4.30.0-kiiya";
-        elanName = "lean4_30_0-kiiya";
+        elanName = "lean-4.30.0-kiiya";
       };
     }) ["x86_64-linux" "aarch64-linux" "aarch64-darwin"]);
 }
