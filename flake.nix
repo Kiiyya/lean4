@@ -108,7 +108,7 @@
       # elan-nix's `programs.elan.toolchains` (no elan-nix dependency here).
       packages.${system}.default = pkgs.callPackage ./nix/package.nix {
         src = inputs.self;
-        version = "4.30.0-kiiya";
+        version = "4.34.0-kiiya";
       };
     }) ["x86_64-linux" "aarch64-linux" "aarch64-darwin"]);
 }

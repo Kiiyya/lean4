@@ -19,6 +19,7 @@
   makeWrapper,
   pkg-config,
   libuv,
+  openssl,
   perl,
 
   src,
@@ -39,8 +40,8 @@ stdenv.mkDerivation (finalAttrs: {
   mimalloc-src = fetchFromGitHub {
     owner = "microsoft";
     repo = "mimalloc";
-    tag = "v2.2.3";
-    hash = "sha256-B0gngv16WFLBtrtG5NqA2m5e95bYVcQraeITcOX9A74=";
+    tag = "v3.4.4";
+    hash = "sha256-CJ2sOio5cttIG27ZiotaES9X+ymHR5HXWK/O0JUjlC4=";
   };
 
   patches = [ ./mimalloc.patch ];
@@ -80,6 +81,7 @@ stdenv.mkDerivation (finalAttrs: {
   buildInputs = [
     gmp
     libuv
+    openssl
     cadical'
   ];
 
