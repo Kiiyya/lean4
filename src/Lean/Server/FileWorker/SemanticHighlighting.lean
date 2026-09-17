@@ -524,7 +524,7 @@ partial def analyze (expr : Expr) (cont : Expr -> Option ConstantInfo -> MetaM �
   let f := expr.getAppFn
   match f with
   | .const name _ =>
-    let constInfo <- getConstInfo name
+    let some constInfo := (<- getEnv).find? name | cont expr none
     if let .defnInfo di := constInfo then
       if di.hints.isAbbrev then
         if let some f' <- Meta.unfoldDefinition? f then
@@ -642,10 +642,15 @@ partial def collectInfoBasedSemanticTokens (i : Elab.InfoTree) (envAfter : Envir
     let .ofTermInfo termInfo := elabInfo | return none
     let .original .. := termInfo.stx.getHeadInfo | return none
     termInfo.runMetaM ctxInfo do
-      withEnv envAfter do
-        Meta.withReducible do -- we want to unfold `abbrev`, e.g. `abbrev Vec3f := Vec 3 Float` should be highlighted the same likeness of `Vec`, and not def-like.
-          -- return some (<- go termInfo.expr termInfo.stx)
-          Option.map ([·]) <$> highlight termInfo
+      -- we want to unfold `abbrev`, e.g. `abbrev Vec3f := Vec 3 Float` should be highlighted the same likeness of `Vec`, and not def-like.
+      let run (env : Environment) : MetaM (Option LeanSemanticToken) :=
+        withEnv env <| Meta.withReducible <| highlight termInfo
+      -- `envAfter` lets us resolve auxiliary decls of the current command, but declarations
+      -- elaborated with `withoutModifyingEnv` (e.g. `example`, whose `_example` and its
+      -- `match_n`/`proof_n` helpers are dropped afterwards) are missing from it. Fall back to
+      -- the environment at the info node, and never let a single token fail the whole request.
+      let tok? <- try run envAfter catch _ => try run ctxInfo.env catch _ => pure none
+      return tok?.map ([·])
   return notFlat.flatten
 
 /-
