@@ -167,3 +167,29 @@ Every test `.lean` file must include a module docstring (`/-! ... -/`) briefly e
 When asked to "rebase a PR onto X", **only change the local branch base** — never change the PR's `--base` target on GitHub unless explicitly told to.
 
 Common Lean4 case: rebasing onto `nightly-with-mathlib` is done to get a mathlib-tested snapshot for CI; the PR still targets `master`.
+
+## Semantic highlighting fork (Kiiyya)
+
+This repo is Max's fork of Lean. Each `releases/vX.Y.Z` branch is the corresponding upstream `leanprover/releases/vX.Y.Z` branch plus **exactly one commit** on top, titled `fork: semantic highlighting + nix toolchain package`, which contains:
+
+- the semantic highlighting patch: extra `SemanticTokenType`/`SemanticTokenModifier` constructors in `src/Lean/Data/Lsp/LanguageFeatures.lean` and the corresponding emitter changes in `src/Lean/Server/FileWorker/SemanticHighlighting.lean`;
+- `packages.<system>.default` in `flake.nix`, calling `nix/package.nix` with `version = "X.Y.Z-kiiya"` (`X.Y.Z` = `LEAN_VERSION_*` in `src/CMakeLists.txt`), which builds this fork as a single elan-style toolchain (see the `elan-nix` repo for the consumer side);
+- `nix/mimalloc.patch`, which rewrites the `FetchContent_Declare(mimalloc ...)` block in the top-level `CMakeLists.txt` to point at the mimalloc source vendored by `nix/package.nix` (`mimalloc-src`), so the build works offline;
+- this section of `.claude/CLAUDE.md`.
+
+Keep it one commit. Never stack cherry-picks of older fork history on top; take the diff of the previous release's fork commit and re-apply it.
+
+### Porting the fork to a new upstream release
+
+1. `git fetch leanprover --tags` and base on the release *branch* tip, not the tag: `git checkout -b releases/vX.Y.Z leanprover/releases/vX.Y.Z` (the branch may carry backports after the tag).
+2. Apply the previous release's fork commit as a single change: `git cherry-pick -n <prev fork commit>` (`-n` keeps it uncommitted). Resolve conflicts in the two highlighting files if upstream touched them.
+3. Check what the packaging depends on and adapt:
+   - `grep -n -A12 'if(USE_MIMALLOC)' CMakeLists.txt` — regenerate `nix/mimalloc.patch` so its context matches (only `GIT_REPOSITORY`/`GIT_BRANCH`/`GIT_TAG`/comment lines and the `SOURCE_DIR` value are removed; `SOURCE_DIR` becomes `"MIMALLOC-SRC"`). Generate it with a real `diff -u`, never by hand, and verify with `patch --dry-run -p1 < nix/mimalloc.patch`.
+   - Set `mimalloc-src.tag` in `nix/package.nix` to the `GIT_TAG` above and get the hash with `nix store prefetch-file --json --unpack https://github.com/microsoft/mimalloc/archive/refs/tags/<tag>.tar.gz`.
+   - `grep -n 'mimalloc/src/mimalloc' stage0/src/CMakeLists.txt src/CMakeLists.txt src/runtime/CMakeLists.txt` — the `postPatch` in `nix/package.nix` substitutes this path; if upstream renames it, update `pattern` there.
+   - `grep -n 'find_package' src/CMakeLists.txt` — add/remove `buildInputs` in `nix/package.nix` accordingly (e.g. `openssl` became required in 4.32).
+   - Bump `version` in `flake.nix` to `X.Y.Z-kiiya`.
+4. Verify with `nix build .#default -L` (≈15–20 min) and `./result/bin/lean --version` (must print `X.Y.Z-kiiya`).
+5. Commit everything as one commit (`fork: semantic highlighting + nix toolchain package`), including the `flake.lock` bump if one was needed. Do not push; Max pushes to `Kiiyya`.
+
+Known per-version differences seen so far: 4.30 used `ExternalProject_Add`; 4.32/4.33 use `FetchContent_Declare` with mimalloc `v2.2.3`; 4.34 adds `GIT_BRANCH dev3` and mimalloc `v3.4.4`.
