@@ -528,7 +528,17 @@ partial def analyze (expr : Expr) (cont : Expr -> Option ConstantInfo -> MetaM �
     if let .defnInfo di := constInfo then
       if di.hints.isAbbrev then
         if let some f' <- Meta.unfoldDefinition? f then
-          return <- analyze (expr.updateFn f') cont
+          let expr' := (expr.updateFn f').headBeta
+          -- A partially applied abbrev, e.g. `Vec3` for `abbrev Vec3 (α : Type) := Vec α 3`,
+          -- unfolds to a lambda: take the token kind from the head of its body, but keep the
+          -- lambda itself so that the modifiers reflect the abbrev's own arity.
+          if expr'.isLambda then
+            let bodyConstInfo? <- Meta.lambdaTelescope expr' fun _ body =>
+              analyze body fun _ constInfo? => pure constInfo?
+            if bodyConstInfo?.isSome then
+              return <- cont expr' bodyConstInfo?
+          else
+            return <- analyze expr' cont
     cont expr constInfo
   -- | .proj structName fieldIdx obj => sorry -- todo
   | .fvar id =>
