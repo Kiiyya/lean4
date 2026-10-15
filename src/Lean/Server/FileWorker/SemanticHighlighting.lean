@@ -619,10 +619,10 @@ partial def highlight (termInfo : Elab.TermInfo) : MetaM (Option LeanSemanticTok
       | some (.ctorInfo ci) =>
         let isStruct := Lean.isNonRecStructure env ci.induct
         if isStruct then
-          mods := .sumLike :: mods
+          mods := .productLike :: mods
           return some ⟨stx, .constructor, 5, mods⟩ -- this is e.g. `Prod.mk`
         else
-          mods := .productLike :: mods
+          mods := .sumLike :: mods
           return some ⟨stx, .enumMember, 5, mods⟩
       | some (.thmInfo di) =>
         if env.isProjectionFn di.name then -- e.g. `Prod.fst`
