@@ -167,3 +167,32 @@ Every test `.lean` file must include a module docstring (`/-! ... -/`) briefly e
 ## Rebasing vs PR base
 
 When asked to "rebase a PR onto X", **only change the local branch base** — never change the PR's `--base` target on GitHub unless explicitly told to.
+
+## Semantic highlighting fork (Kiiyya)
+
+This repo is Max's fork of Lean. From 4.35 on, each `releases/vX.Y.Z` branch is the corresponding upstream `leanprover/releases/vX.Y.Z` branch plus **exactly two commits** on top:
+
+1. `fork: semantic highlighting`: extra `SemanticTokenType`/`SemanticTokenModifier` constructors in `src/Lean/Data/Lsp/LanguageFeatures.lean` and the corresponding emitter changes in `src/Lean/Server/FileWorker/SemanticHighlighting.lean`. Nothing else.
+2. `fork: elan-nix toolchain package`, which contains:
+   - `packages.<system>.default` in `flake.nix`, calling `nix/package.nix` with `version = "X.Y.Z-kiiya"` (`X.Y.Z` = `LEAN_VERSION_*` in `src/CMakeLists.txt`), which builds this fork as a single elan-style toolchain (see the `elan-nix` repo for the consumer side);
+   - `nix/mimalloc.patch`, which rewrites the `FetchContent_Declare(mimalloc ...)` block in the top-level `CMakeLists.txt` to point at the mimalloc source vendored by `nix/package.nix` (`mimalloc-src`), so the build works offline;
+   - the `flake.lock` changes, if any;
+   - this section of `.claude/CLAUDE.md`.
+
+Keep it at these two commits. Intermediate work belongs on a scratch branch (e.g. `fork-X.Y-dev`) whose result is re-committed as the two commits; the scratch branch is never pushed. Older release branches (4.34 and earlier) have a different commit layout; leave their history alone.
+
+### Porting the fork to a new upstream release
+
+1. `git fetch lean4 --tags` (the upstream remote is named `lean4`) and base on the release *branch* tip, not the tag: `git checkout -b fork-X.Y-dev lean4/releases/vX.Y.Z` (the branch may carry backports after the tag).
+2. Apply the previous release's fork as a diff against the upstream commit it sits on, split by part: `git diff <prev upstream base> <prev fork branch> -- src/Lean/Data/Lsp/LanguageFeatures.lean src/Lean/Server/FileWorker/SemanticHighlighting.lean | git apply -3`, and likewise for `flake.nix flake.lock nix/`. Resolve conflicts in the two highlighting files if upstream touched them, and grep that every identifier the fork code uses still exists.
+3. Check what the packaging depends on and adapt:
+   - `grep -n -A12 'if(USE_MIMALLOC)' CMakeLists.txt` — regenerate `nix/mimalloc.patch` so its context matches (only `GIT_REPOSITORY`/`GIT_BRANCH`/`GIT_TAG`/comment lines and the `SOURCE_DIR` value are removed; `SOURCE_DIR` becomes `"MIMALLOC-SRC"`). Generate it with a real `diff -u`, never by hand, and verify with `patch --dry-run -p1 < nix/mimalloc.patch`.
+   - Set `mimalloc-src.tag` in `nix/package.nix` to the `GIT_TAG` above and get the hash with `nix store prefetch-file --json --unpack https://github.com/microsoft/mimalloc/archive/refs/tags/<tag>.tar.gz`.
+   - `grep -n 'mimalloc/src/mimalloc' stage0/src/CMakeLists.txt src/CMakeLists.txt src/runtime/CMakeLists.txt` — the `postPatch` in `nix/package.nix` substitutes this path; if upstream renames it, update `pattern` there.
+   - `grep -n 'find_package' src/CMakeLists.txt` — add/remove `buildInputs` in `nix/package.nix` accordingly (e.g. `openssl` became required in 4.32).
+   - `grep -n -A4 'ExternalProject_Add' src/CMakeLists.txt` — new git-sourced external projects need `git` at configure time even when `EXCLUDE_FROM_ALL` (already in `nativeBuildInputs` since 4.35); other new download methods may need similar treatment.
+   - Bump `version` in `flake.nix` to `X.Y.Z-kiiya`.
+4. Verify with `nix build .#default -L` (≈12–20 min) and `./result/bin/lean --version`, which must print `version X.Y.Z` and `commit X.Y.Z-kiiya`. Also check that a file importing `Lean` can reference one of the fork's token types (e.g. `Lean.Lsp.SemanticTokenType.proposition`).
+5. Create `releases/vX.Y.Z` from the same upstream tip and commit the result as the two commits above. Do not push; Max pushes to `Kiiyya`.
+
+Known per-version differences seen so far: 4.30 used `ExternalProject_Add`; 4.32/4.33 use `FetchContent_Declare` with mimalloc `v2.2.3`; 4.34 adds `GIT_BRANCH dev3` and mimalloc `v3.4.4`; 4.35 bumps mimalloc to `v3.4.5` and adds `ExternalProject_Add`s for lean4lean, nanoda, con-leche and con-ron (hence `git` in `nativeBuildInputs`).

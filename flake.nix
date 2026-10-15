@@ -103,5 +103,12 @@
         oldGlibc = devShellWithDist pkgsDist-old;
         oldGlibcAArch = devShellWithDist pkgsDist-old-aarch;
       };
+
+      # This fork built as a single elan toolchain package. Consumed directly by
+      # elan-nix's `programs.elan.toolchains` (no elan-nix dependency here).
+      packages.${system}.default = pkgs.callPackage ./nix/package.nix {
+        src = inputs.self;
+        version = "4.35.0-kiiya";
+      };
     }) ["x86_64-linux" "aarch64-linux" "aarch64-darwin"]);
 }
